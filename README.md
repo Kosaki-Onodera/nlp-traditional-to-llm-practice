@@ -151,3 +151,58 @@ TextCNN擅长挖掘短语、固定搭配等局部情感特征，采用并行计�
 - GloVe为静态词向量，不能解决一词多义；
 - CNN只关注局部相邻词语，无法建模长距离上下文依赖；
 - 不重视语序信息，难以区分语序不同带来的语义变化。
+#### 结果  
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| cnn.csv | 0.74548 |
+| CNN (1).csv | 0.83604 |
+| CNN (2).csv | 0.88816 |  
+##### 对于第一版代码的结果分析及修改  
+###### 结果分析  
+- 学习率设置严重不合理：lr=0.8,前两轮 loss剧烈震荡，参数来回跳跃，难以找到最优区间，模型很难平稳收敛。
+- 网络结构过于简陋：只用单一卷积核 size=3
+- 缺少正则，容易震荡 / 轻微过拟合
+###### 修改方案  
+- lr设为很小的数，优化器改用 Adam
+- 采用经典多卷积核 `[3,4,5]` TextCNN 结构
+- 加入 Dropout 防止过拟合
+
+##### 对于第二版代码的结果分析及修改  
+###### 结果分析   
+此次，我在代码中加入输出错误案例模块来输出3条错误案例
+真实标签：0，预测标签：1  
+文本：natural born killers cinema cut r director s cut nc it s an unusual oliver stone picture but when i read he was on drugs during the filming i needed no further explanation natural born killers is a risky mad all out film making that we do not get very often strange psychotic artistic pictures natural born killers is basically the story of how two mass killers were popularised and glorified by the media there is a great scene where an interviewer questions some teenagers about mickey and mallory and the teenager says murder is wrong but if i was a mass murderer i d be mickey and mallory mickey describes this with a situation of frankenstein the monster and dr frankenstein dr frankenstein is the media who has turned them into these monstrous killersmost oliver stone films examine the flaws of the america the country that the director loves and admires i guess natural born killers is about the effect of mass media technology and how obsessive as a nation americans are and most of the world over things such as mass killers and bizarre situations the killers played by woody harrelson mickey and juliette lewis mallory are executed astonishingly by two excellent actors who step into the lives of two interestingly brutal killers mickey and mallory believe that some people are worthy of killing perhaps in the cruel theory of social darwinism survival of the fittest mickey says in his interview in prison that other species commit murder we as humans ravage other species and exploit the environment the script is interesting but it is questionable how much this film amounts to in the sense of making us think about society and human behaviour rather than the intensity of a hour bloodbath that we have seen the last hour of the film takes place in a maximum security prison we see the harsh realities of prison life the attitudes of the warden etc overfilling of prisons maybe stone is questioning the future the path that society is leading to two other interesting characters first a reporter who runs a show about america s maniacs and is obsessed with boosting ratings that he goes to any length to capture the story of mickey and mallory the other is police officer scagnetti an insane perhaps sadistic officer that is in love with mallory he also has some weird obsession with mass killers since his mother was killed during the massacre at waco texas by charles whitman the cinematography is superb different colours shadows styles create a feeling of disorientation the green colour most evident of all is green to resemble the sickness of the killers in the drugstore when they are looking for rattlesnake antidote the camera work is insane shaky buzzy it takes some determination to get use to it and accept it highly unorthodox psychedelic and unusual natural born killers does not glamourise the existence of insane murderers it questions it and how we as the public may fuel this attribute although the above review sound quite positive i did  
+文本：长篇讨论《天生杀人狂》电影手法、镜头、叙事、主题，大量客观分析，看上去有很多褒义词（cinematography is superb、excellent actors），**但是结尾转折：although the above review sound quite positive i did**  
+####### 出错原因
+
+1. **模型偏向捕捉局部正向词汇**  
+文中大量 `superb、excellent、interesting` 等正面词语集中在前大半段；  
+2. **无法识别长文本末尾的转折逻辑**  
+否定 / 负面观点出现在全文尾部，TextCNN 依靠固定窗口局部特征提取，**缺少长距离语义依赖能力**；卷积窗口只能抓取片段词语，看不到远距离转折关系；  
+3. 文本过长，局部正向信号压制了结尾负面结论。      
+核心：**长文本 + 文末反转，CNN 缺乏全局上下文感知**
+
+真实标签：1，预测标签：0
+文本：there is nothing remotely scary about modern horror which is an insult to the word horror freddie vs jason the scream movies cabin trash and especially stephen king s infantile attempts he s recycled every story from the monkey s paw to whatever often in the same story at horror in both writing and on film except for kubrick s version of the shining which actually was scary unlike king s books which are as frightening as my big toe the left one which still has the nail but the woman in black is that rare modern film that will make the hairs on the back of your neck stand on end this is the way it should be done the director creates tension and the scariest ghost ever actually seen simply by having her suddenly turn up standing still somewhere or other with that incredible look on her face then he brings it all to a ghastly disturbing close he s learned his lessons from the masters who knew how to make horror val lewton original cat people and robert wise a val lewton disciple and director of the haunting and the body snatcher jacques tournier another val lewton disciple who directed a truly horrifying zombie film not the gross rubbish raimi did gross isn t scary folks it s just gross and lewis allen the uninvited and of course jack clayton s turn on henry james the innocents and the way the master of suspense hitchcock can still bring you to the edge of your seat even with a slow building and burning period piece like under capricorn ten stars  
+文本：大量痛斥现代恐怖片很差、吐槽 Stephen King、吐槽杰森、惊声尖叫，出现大量负面词汇 `nothing scary、insult、infantile、rubbish`；作者先大范围批评其他影片，**最后才夸赞《黑衣女人》是优秀恐怖片**。  
+####### 出错原因
+
+1. **大量负面修饰词作为 “干扰噪声” 占据文本前半部分**；  
+2. 模型被密集负面词汇干扰，误判整体情感；  
+3. 区分不了：**“批评别的电影” ≠ “批评本片”**。  
+TextCNN 只统计词语情感倾向，**无法区分评价对象**，分不清负面词是吐槽竞品还是评价目标影片。  
+
+真实标签：1，预测标签：0
+文本：very good except for the ending which was a huge disappointment the script was very good as was the acting the visuals were often very grainy but this in a way added to the film as the snowy features were in good places that helped create a mood towards the film this affect was ruined by the extremely unbelievable ending i was going to give this film an out of ten but the ending knocked it down a point to because it seemed to depart radically from the first minutes of the movie and seemed quite forced at the end to make the film makers look clever this movie though was much better than films with quite a lot larger budgets and seemed to be filmed like a home movie with some extra equipment not much in the way of special effects as these go but for suspense it was very good  
+####### 出错原因  
+
+1. 影评典型模式：**大体好评，但重点抨击结局**；   
+2. 模型过度放大 “disappointment、ruined” 这类强负向词汇的权重；  
+3. 无法分辨：局部针对【结局】的批评 ≠ 整部电影全盘否定。   
+人类能区分 “局部不满” 和 “整体态度”，CNN 单纯依靠词语无法精细区分评价范围。
+
+####### 修改方案  
+- 当前仅使用最大池化，容易被单个强极性词汇主导预测结果。可以采用**最大池化 + 平均池化拼接**，同时保留显著情感特征与全局文本特征，缓解混合情感文本误判问题；也可引入轻量注意力机制，让模型自动聚焦文本中表达核心观点的语句，降低无关干扰内容的权重。
+- 目前采用单一 GloVe 预训练向量微调。可以设置可选模式：区分低频词与高频词，支持冻结 / 解冻 Embedding 层。
+- 另外还采用余弦退火学习率调度，EarlyStopping 早停 + 保存最优模型
+  
