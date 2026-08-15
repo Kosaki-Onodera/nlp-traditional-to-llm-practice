@@ -31,10 +31,10 @@ Word2Vec、GloVe 仅能将单个单词转化为固定向量，只能表示孤立
 TextCNN 是适配文本任务的轻量化卷积网络，由图像CNN优化改造而来，核心作用是高效提取文本局部组合特征，聚焦词语搭配、短句语义，不依赖上下文记忆与语序逻辑，适配文本短语级特征挖掘。
 #### 2. 详细工作机制
 - 输入结构：以 GloVe 预训练词向量构成二维输入矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$，$T$ 为句子单词数量，$d$ 代表词向量维度。
-- 多尺度卷积核滑动采样：设置尺寸 $k=2,3,4$ 的卷积核，分别对应二元、三元、多元词语组合，模拟人工提取 n-gram 语法特征。单个卷积核权重矩阵 $\boldsymbol{W}\in\mathbb{R}^{k\times d}$。
-- 卷积特征计算：卷积核在词向量矩阵逐行滑动，对窗口内局部词向量加权求和并添加偏置，经过激活函数得到特征：
+- 多尺度卷积核滑动采样：设置尺寸 $k=2,3,4$ 的卷积核，分别对应二元、三元、多元词语组合，单个卷积核权重矩阵 $\boldsymbol{W}\in\mathbb{R}^{k\times d}$。
+- 卷积特征计算：卷积核在词向量矩阵逐行滑动，对窗口内局部词向量加权运算，经过激活函数得到特征：
 $$
-c_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+b\big)
+c_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+\boldsymbol{b}\big)
 $$
 滑动完成得到一维特征图 $\boldsymbol{c}=[c_1,c_2,\dots,c_{T-k+1}]$。
 - 最大池化降维筛选：对卷积生成的特征图执行全局最大池化：
@@ -55,7 +55,6 @@ $$
 | 计算特性 | 支持并行运算，训练效率高。 |
 | 优势 | 模型结构简洁，收敛稳定；擅长识别固定语义短语，短句分类效果较好。 |
 | 局限性 | 感受野有限，难以捕捉远距离词语关联；对语序不敏感，长文本语义建模能力不足。 |
-
 ### 二、LSTM 长短期记忆网络
 #### 1. 核心功能
 LSTM 是针对时序数据优化的循环神经网络，核心作用是解决传统RNN梯度消失问题，精准捕捉文本语序信息与长距离上下文依赖，挖掘全文时序语义逻辑，适用于长文本语义建模任务。
@@ -63,12 +62,11 @@ LSTM 是针对时序数据优化的循环神经网络，核心作用是解决传
 - 输入结构：以 GloVe 预训练词向量时序序列 $\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T$ 为输入，按照文本词语顺序逐词串行输入网络。
 - 遗忘门：控制丢弃上一时刻细胞状态信息：
 $$
-\boldsymbol{f}_t=\sigma(\boldsymbol{W}_f[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_f)
+\boldsymbol{f}_t=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_f\right)
 $$
 - 输入门：筛选当前时刻需要存入细胞状态的新信息：
 $$
-\boldsymbol{i}_t=\sigma(\boldsymbol{W}_i[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_i),\quad
-\tilde{\boldsymbol{c}}_t=\tanh(\boldsymbol{W}_c[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_c)
+\boldsymbol{i}_t=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_c\right)
 $$
 - 细胞状态更新：结合遗忘门与输入门更新长期记忆：
 $$
@@ -76,8 +74,7 @@ $$
 $$
 - 输出门：控制细胞状态向外输出隐状态：
 $$
-\boldsymbol{o}_t=\sigma(\boldsymbol{W}_o[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_o),\quad
-\boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
+\boldsymbol{o}_t=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
 $$
 - 全局时序特征输出：遍历全部词向量序列后，取最终时刻隐藏状态 $\boldsymbol{h}_T$ 作为整句文本全局时序特征。
 - 特征分类预测：将全局时序特征输入全连接层与激活函数，完成文本分类任务。
@@ -92,7 +89,7 @@ $$
 | 特征提取流程 | 词向量逐词输入网络→遗忘门、输入门、输出门协同调控记忆→迭代更新细胞状态与隐藏状态→取末端隐状态 $\boldsymbol{h}_T$ 作为全局特征→全连接层分类。 |
 | 计算特性 | 串行时序计算，训练速度较慢。 |
 | 优势 | 对词语语序敏感，语义逻辑贴合文本规律；擅长长文本建模，解决RNN梯度消失问题。 |
-| 局限性 | 训练效率低；单末端状态输出，易丢失前文关键特征，特征提取不充分。 |   
+| 局限性 | 训练效率低；单末端状态输出，易丢失前文关键特征，特征提取不充分。 |
 
 ### 三、CNN-LSTM 混合特征提取模型
 #### 1. 核心功能
@@ -101,18 +98,16 @@ CNN-LSTM 是融合卷积网络与循环网络的混合模型，结合CNN局部�
 - 输入结构：以 GloVe 预训练词向量矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$ 作为模型底层输入。
 - CNN局部特征挖掘：采用卷积核窗口大小 $k$ 执行卷积运算：
 $$
-c_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+b\big)
+\boldsymbol{c}_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+\boldsymbol{b}\big)
 $$
 卷积后生成局部特征序列 $\boldsymbol{C}=[\boldsymbol{c}_1,\boldsymbol{c}_2,\dots,\boldsymbol{c}_{T-k+1}]$，表征各类短语语义。
-- LSTM时序深度建模：将CNN输出特征序列 $\boldsymbol{c}_t$ 替代原始词向量送入LSTM，各门计算公式：
+- LSTM时序深度建模：将CNN输出特征序列 $\boldsymbol{c}_t$ 替代原始词向量送入LSTM：
 $$
 \begin{align*}
-\boldsymbol{f}_t&=\sigma(\boldsymbol{W}_f[\boldsymbol{h}_{t-1},\boldsymbol{c}_t]+\boldsymbol{b}_f)\\
-\boldsymbol{i}_t&=\sigma(\boldsymbol{W}_i[\boldsymbol{h}_{t-1},\boldsymbol{c}_t]+\boldsymbol{b}_i),\quad
-\tilde{\boldsymbol{c}}'_t=\tanh(\boldsymbol{W}_c[\boldsymbol{h}_{t-1},\boldsymbol{c}_t]+\boldsymbol{b}_c)\\
+\boldsymbol{f}_t&=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_f\right)\\
+\boldsymbol{i}_t&=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}'_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_c\right)\\
 \boldsymbol{c}'_t&=\boldsymbol{f}_t\odot\boldsymbol{c}'_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}'_t\\
-\boldsymbol{o}_t&=\sigma(\boldsymbol{W}_o[\boldsymbol{h}_{t-1},\boldsymbol{c}_t]+\boldsymbol{b}_o),\quad
-\boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}'_t)
+\boldsymbol{o}_t&=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}'_t)
 \end{align*}
 $$
 - 全局特征融合输出：取LSTM最后时刻隐状态 $\boldsymbol{h}_{T'}$（$T'$ 为CNN输出序列长度）作为融合局部短语与时序依赖的深度特征。
@@ -136,21 +131,19 @@ $$
 Attention-LSTM 在LSTM基础上引入自注意力机制，解决普通LSTM仅依靠最后时刻隐状态造成前文信息丢失的缺陷；自适应为每个时序位置分配权重，自动聚焦关键词语义，实现全局特征最优聚合。
 #### 2. 详细工作机制
 - 输入结构：GloVe词向量序列 $\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T$ 送入LSTM。
-- LSTM时序编码：利用LSTM门控机制逐时刻计算，输出全部时序隐状态序列 $\boldsymbol{H}=[\boldsymbol{h}_1,\boldsymbol{h}_2,\dots,\boldsymbol{h}_T]$，不直接丢弃中间状态。
+- LSTM时序编码：利用LSTM门控机制逐时刻计算，输出全部时序隐状态序列 $\boldsymbol{H}=[\boldsymbol{h}_1,\boldsymbol{h}_2,\dots,\boldsymbol{h}_T]$：
 $$
 \begin{align*}
-\boldsymbol{f}_t&=\sigma(\boldsymbol{W}_f[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_f)\\
-\boldsymbol{i}_t&=\sigma(\boldsymbol{W}_i[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_i),\quad
-\tilde{\boldsymbol{c}}_t=\tanh(\boldsymbol{W}_c[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_c)\\
+\boldsymbol{f}_t&=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_f\right)\\
+\boldsymbol{i}_t&=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_c\right)\\
 \boldsymbol{c}_t&=\boldsymbol{f}_t\odot\boldsymbol{c}_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}_t\\
-\boldsymbol{o}_t&=\sigma(\boldsymbol{W}_o[\boldsymbol{h}_{t-1},\boldsymbol{e}_t]+\boldsymbol{b}_o),\quad
-\boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
+\boldsymbol{o}_t&=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
 \end{align*}
 $$
 - 注意力权重计算：
 $$
 \begin{align*}
-\boldsymbol{u}_t&=\tanh(\boldsymbol{W}_a\boldsymbol{h}_t+\boldsymbol{b}_a)\\
+\boldsymbol{u}_t&=\tanh\left(\boldsymbol{W}_a\boldsymbol{h}_t+\boldsymbol{b}_a\right)\\
 s_t&=\boldsymbol{v}_a^\top \boldsymbol{u}_t\\
 \alpha_t&=\frac{\exp(s_t)}{\sum_{k=1}^T\exp(s_k)}
 \end{align*}
@@ -173,7 +166,6 @@ $$
 | 计算特性 | LSTM串行运算叠加注意力权重求解，计算开销高于基础LSTM。 |
 | 优势 | 充分保留全部时序信息，自动聚焦关键词；克服基础LSTM末端状态信息损失问题；特征表征效果更优。 |
 | 局限性 | 训练速度较慢；引入注意力增加参数量；依赖静态词向量，不具备动态语义编码能力。 |
-
 
 
 ##     
