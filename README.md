@@ -58,26 +58,46 @@ $$
 ### 二、LSTM 长短期记忆网络
 #### 1. 核心功能
 LSTM 是针对时序数据优化的循环神经网络，核心作用是解决传统RNN梯度消失问题，精准捕捉文本语序信息与长距离上下文依赖，挖掘全文时序语义逻辑，适用于长文本语义建模任务。
+
 #### 2. 详细工作机制
-- 输入结构：以 GloVe 预训练词向量时序序列 $\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T$ 为输入，按照文本词语顺序逐词串行输入网络。
-- 遗忘门：控制丢弃上一时刻细胞状态信息：  
+- 输入结构：以 GloVe 预训练词向量时序序列 e1, e2, ..., eT 为输入，按照文本词语顺序逐词串行输入网络。
+
+- 遗忘门：控制丢弃上一时刻细胞状态信息：
+
 $$
-\boldsymbol{f}_t=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_f\right)
-$$  
-- 输入门：筛选当前时刻需要存入细胞状态的新信息：   
-$$   
-\boldsymbol{i}_t=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_c\right)
-$$   
+f_t = \sigma(W_f[h_{t-1}, e_t] + b_f)
+$$
+
+- 输入门：筛选当前时刻需要存入细胞状态的新信息：
+
+$$
+i_t = \sigma(W_i[h_{t-1}, e_t] + b_i)
+$$
+
+$$
+\tilde{c}_t = \tanh(W_c[h_{t-1}, e_t] + b_c)
+$$
+
 - 细胞状态更新：结合遗忘门与输入门更新长期记忆：
+
 $$
-\boldsymbol{c}_t=\boldsymbol{f}_t\odot\boldsymbol{c}_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}_t
+c_t = f_t \odot c_{t-1} + i_t \odot \tilde{c}_t
 $$
+
 - 输出门：控制细胞状态向外输出隐状态：
+
 $$
-\boldsymbol{o}_t=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
+o_t = \sigma(W_o[h_{t-1}, e_t] + b_o)
 $$
-- 全局时序特征输出：遍历全部词向量序列后，取最终时刻隐藏状态 $\boldsymbol{h}_T$ 作为整句文本全局时序特征。
+
+$$
+h_t = o_t \odot \tanh(c_t)
+$$
+
+- 全局时序特征输出：遍历全部词向量序列后，取最终时刻隐藏状态 hT 作为整句文本全局时序特征。
+
 - 特征分类预测：将全局时序特征输入全连接层与激活函数，完成文本分类任务。
+
 #### 3. 优缺点分析
 - 优点：严格遵循文本语序计算，语义逻辑性强；具备长距离依赖捕捉能力，长文本建模效果优于CNN；有效解决传统RNN梯度消失问题。
 - 缺点：采用串行逐词计算方式，训练速度慢、耗时久；仅依赖最后时刻状态输出特征，容易丢失文本前部关键语义信息，特征利用率较低。
@@ -85,11 +105,12 @@ $$
 | 项目 | 内容 |
 | ---- | ---- |
 | 核心功能 | 时序循环网络，依靠门控机制筛选语义信息，捕捉文本语序逻辑与长距离上下文依赖。 |
-| 输入形式 | 按文本语序排列的GloVe词向量时序序列 $\{\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T\}$。 |
-| 特征提取流程 | 词向量逐词输入网络→遗忘门、输入门、输出门协同调控记忆→迭代更新细胞状态与隐藏状态→取末端隐状态 $\boldsymbol{h}_T$ 作为全局特征→全连接层分类。 |
+| 输入形式 | 按文本语序排列的GloVe词向量时序序列 e1, e2, ..., eT。 |
+| 特征提取流程 | 词向量逐词输入网络→遗忘门、输入门、输出门协同调控记忆→迭代更新细胞状态与隐藏状态→取末端隐状态 hT 作为全局特征→全连接层分类。 |
 | 计算特性 | 串行时序计算，训练速度较慢。 |
 | 优势 | 对词语语序敏感，语义逻辑贴合文本规律；擅长长文本建模，解决RNN梯度消失问题。 |
 | 局限性 | 训练效率低；单末端状态输出，易丢失前文关键特征，特征提取不充分。 |
+
 
 ### 三、CNN-LSTM 混合特征提取模型
 #### 1. 核心功能
