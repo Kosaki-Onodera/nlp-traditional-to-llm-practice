@@ -30,17 +30,21 @@ Word2Vec、GloVe 仅能将单个单词转化为固定向量，只能表示孤立
 #### 1. 核心功能
 TextCNN 是适配文本任务的轻量化卷积网络，由图像CNN优化改造而来，核心作用是高效提取文本局部组合特征，聚焦词语搭配、短句语义，不依赖上下文记忆与语序逻辑，适配文本短语级特征挖掘。
 #### 2. 详细工作机制
-- 输入结构：以 GloVe 预训练词向量构成二维输入矩阵  $\boldsymbol{E}\in\mathbb{R}^{T\times d}$ ，$T$ 为句子单词数量，$d$ 代表词向量维度。
-- 多尺度卷积核滑动采样：设置尺寸 $k=2,3,4$ 的卷积核，分别对应二元、三元、多元词语组合，单个卷积核权重矩阵 $\boldsymbol{W}\in\mathbb{R}^{k\times d}$。
+- 输入结构：以 GloVe 预训练词向量构成二维输入矩阵 $E\in R^{T\times d}$，$T$ 为句子单词数量，$d$ 代表词向量维度。
+- 多尺度卷积核滑动采样：设置尺寸 $k=2,3,4$ 的卷积核，分别对应二元、三元、多元词语组合，单个卷积核权重矩阵 $W\in R^{k\times d}$。
 - 卷积特征计算：卷积核在词向量矩阵逐行滑动，对窗口内局部词向量加权运算，经过激活函数得到特征：
+
 $$
-c_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+\boldsymbol{b}\big)
+c_i=\text{ReLU}(W\cdot E_{i:i+k-1}+b)
 $$
-滑动完成得到一维特征图 $\boldsymbol{c}=[c_1,c_2,\dots,c_{T-k+1}]$。
+
+滑动完成得到一维特征图 $c=[c_1,c_2,\dots,c_{T-k+1}]$。
 - 最大池化降维筛选：对卷积生成的特征图执行全局最大池化：
+
 $$
-\hat{c}=\max\{\boldsymbol{c}\}
+\hat{c}=\max\{c\}
 $$
+
 自动保留每类特征中响应最强、语义贡献最大的关键特征，过滤冗余无效信息，同时实现特征降维。
 - 特征融合分类：将不同尺寸卷积核得到的池化特征拼接融合，输入全连接层，配合Softmax完成文本分类。
 #### 3. 优缺点分析
@@ -50,7 +54,7 @@ $$
 | 项目 | 内容 |
 | ---- | ---- |
 | 核心功能 | 面向文本任务的轻量化卷积网络，专注抽取局部词语组合特征，捕获短语层面语义信息。 |
-| 输入形式 | GloVe词向量拼接形成二维矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$，$T$为序列长度，$d$为词向量维度。 |
+| 输入形式 | GloVe词向量拼接形成二维矩阵 $E\in R^{T\times d}$，$T$为序列长度，$d$为词向量维度。 |
 | 特征提取流程 | 通过尺寸2、3、4卷积核滑动提取多元词组特征；卷积得到特征图后利用全局最大池化筛选有效特征、压缩维度；融合多尺度特征送入全连接层完成分类。 |
 | 计算特性 | 支持并行运算，训练效率高。 |
 | 优势 | 模型结构简洁，收敛稳定；擅长识别固定语义短语，短句分类效果较好。 |
@@ -116,22 +120,41 @@ $$
 #### 1. 核心功能
 CNN-LSTM 是融合卷积网络与循环网络的混合模型，结合CNN局部短语提取优势与LSTM长时序建模优势，同时挖掘文本局部细粒度语义与全局上下文时序逻辑，实现双层特征互补。
 #### 2. 详细工作机制
-- 输入结构：以 GloVe 预训练词向量矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$ 作为模型底层输入。
+- 输入结构：以 GloVe 预训练词向量矩阵 $E\in R^{T\times d}$ 作为模型底层输入。
 - CNN局部特征挖掘：采用卷积核窗口大小 $k$ 执行卷积运算：
+
 $$
-\boldsymbol{c}_i=\text{ReLU}\big(\boldsymbol{W}\cdot\boldsymbol{E}_{i:i+k-1}+\boldsymbol{b}\big)
+c_i=\text{ReLU}(W\cdot E_{i:i+k-1}+b)
 $$
-卷积后生成局部特征序列 $\boldsymbol{C}=[\boldsymbol{c}_1,\boldsymbol{c}_2,\dots,\boldsymbol{c}_{T-k+1}]$，表征各类短语语义。
-- LSTM时序深度建模：将CNN输出特征序列 $\boldsymbol{c}_t$ 替代原始词向量送入LSTM：
+
+卷积后生成局部特征序列 $C=[c_1,c_2,\dots,c_{T-k+1}]$，表征各类短语语义。
+- LSTM时序深度建模：将CNN输出特征序列 $c_t$ 替代原始词向量送入LSTM：
+
 $$
-\begin{align*}
-\boldsymbol{f}_t&=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_f\right)\\
-\boldsymbol{i}_t&=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}'_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_c\right)\\
-\boldsymbol{c}'_t&=\boldsymbol{f}_t\odot\boldsymbol{c}'_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}'_t\\
-\boldsymbol{o}_t&=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{c}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}'_t)
-\end{align*}
+f_t = \sigma(W_f[h_{t-1}, c_t] + b_f)
 $$
-- 全局特征融合输出：取LSTM最后时刻隐状态 $\boldsymbol{h}_{T'}$（$T'$ 为CNN输出序列长度）作为融合局部短语与时序依赖的深度特征。
+
+$$
+i_t = \sigma(W_i[h_{t-1}, c_t] + b_i)
+$$
+
+$$
+\tilde{c}_t = \tanh(W_c[h_{t-1}, c_t] + b_c)
+$$
+
+$$
+c_t' = f_t \odot c_{t-1}' + i_t \odot \tilde{c}_t
+$$
+
+$$
+o_t = \sigma(W_o[h_{t-1}, c_t] + b_o)
+$$
+
+$$
+h_t = o_t \odot \tanh(c_t')
+$$
+
+- 全局特征融合输出：取LSTM最后时刻隐状态 $h_{T'}$（$T'$ 为CNN输出序列长度）作为融合局部短语与时序依赖的深度特征。
 - 分类预测：融合特征输入全连接层，配合Softmax完成文本分类任务。
 #### 3. 优缺点分析
 - 优点：双模块优势互补，既保留CNN短语特征提取能力，又具备LSTM时序建模能力；特征维度更丰富，长短文本适配性更强，综合表征能力优于单一模型。
@@ -140,7 +163,7 @@ $$
 | 项目 | 内容 |
 | ---- | ---- |
 | 核心功能 | 混合双层特征提取模型，融合CNN局部短语特征与LSTM全局时序特征，实现粗细粒度语义结合。 |
-| 输入形式 | GloVe预训练词向量二维矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$。 |
+| 输入形式 | GloVe预训练词向量二维矩阵 $E\in R^{T\times d}$。 |
 | 特征提取流程 | 词向量输入→CNN卷积提取局部短语特征，生成特征序列→特征序列送入LSTM建模长距离时序依赖→取末端隐状态作为全局特征→全连接层分类。 |
 | 计算特性 | 先并行卷积、后串行循环计算，结构复杂，训练开销较大。 |
 | 优势 | 局部细节与全局语义兼顾，特征表达全面；适配长短各类文本，鲁棒性更强。 |
@@ -149,45 +172,69 @@ $$
 
 ### 四、Attention-LSTM 注意力增强时序模型
 #### 1. 核心功能
-Attention-LSTM 在LSTM基础上引入自注意力机制，解决普通LSTM仅依靠最后时刻隐状态造成前文信息丢失的缺陷；自适应为每个时序位置分配权重，自动聚焦关键词语义，实现全局特征最优聚合。
+Attention-LSTM 在LSTM基础上引入注意力机制，解决普通LSTM仅依靠最后时刻隐状态造成前文信息丢失的缺陷；自适应为每个时序位置分配权重，自动聚焦关键词语义，实现全局特征最优聚合。
 #### 2. 详细工作机制
-- 输入结构：GloVe词向量序列 $\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T$ 送入LSTM。
-- LSTM时序编码：利用LSTM门控机制逐时刻计算，输出全部时序隐状态序列 $\boldsymbol{H}=[\boldsymbol{h}_1,\boldsymbol{h}_2,\dots,\boldsymbol{h}_T]$：
+- 输入结构：GloVe词向量序列 $e_1,e_2,\dots,e_T$ 送入LSTM。
+- LSTM时序编码：利用LSTM门控机制逐时刻计算，输出全部时序隐状态序列 $H=[h_1,h_2,\dots,h_T]$：
+
 $$
-\begin{align*}
-\boldsymbol{f}_t&=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_f\right)\\
-\boldsymbol{i}_t&=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_c\right)\\
-\boldsymbol{c}_t&=\boldsymbol{f}_t\odot\boldsymbol{c}_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}_t\\
-\boldsymbol{o}_t&=\sigma\left(\boldsymbol{W}_o\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_o\right),\quad \boldsymbol{h}_t=\boldsymbol{o}_t\odot\tanh(\boldsymbol{c}_t)
-\end{align*}
+f_t = \sigma(W_f[h_{t-1}, e_t] + b_f)
 $$
+
+$$
+i_t = \sigma(W_i[h_{t-1}, e_t] + b_i)
+$$
+
+$$
+\tilde{c}_t = \tanh(W_c[h_{t-1}, e_t] + b_c)
+$$
+
+$$
+c_t = f_t \odot c_{t-1} + i_t \odot \tilde{c}_t
+$$
+
+$$
+o_t = \sigma(W_o[h_{t-1}, e_t] + b_o)
+$$
+
+$$
+h_t = o_t \odot \tanh(c_t)
+$$
+
 - 注意力权重计算：
+
 $$
-\begin{align*}
-\boldsymbol{u}_t&=\tanh\left(\boldsymbol{W}_a\boldsymbol{h}_t+\boldsymbol{b}_a\right)\\
-s_t&=\boldsymbol{v}_a^\top \boldsymbol{u}_t\\
-\alpha_t&=\frac{\exp(s_t)}{\sum_{k=1}^T\exp(s_k)}
-\end{align*}
+u_t=\tanh(W_a h_t + b_a)
 $$
+
+$$
+s_t=v_a^\top u_t
+$$
+
+$$
+\alpha_t=\frac{\exp(s_t)}{\sum_{k=1}^T\exp(s_k)}
+$$
+
 $\alpha_t$ 代表第 $t$ 个词语隐状态对应的重要程度权重。
 - 特征加权聚合：
+
 $$
-\boldsymbol{r}=\sum_{t=1}^T \alpha_t \boldsymbol{h}_t
+r=\sum_{t=1}^T \alpha_t h_t
 $$
-- 分类预测：加权得到全局表征 $\boldsymbol{r}$ 送入全连接层，配合Softmax输出分类结果。
+
+- 分类预测：加权聚合得到全局表征 $r$ 送入全连接层，配合Softmax输出分类结果。
 #### 3. 优缺点分析
-- 优点：继承LSTM时序建模能力；注意力机制自适应筛选关键信息，缓解长文本前部信息丢失；模型具备可解释性，可可视化各词语权重；特征聚合方式更加合理。
-- 缺点：LSTM串行计算带来训练速度短板；注意力模块引入额外参数，增大计算开销；底层依旧依赖静态GloVe词向量，无法解决一词多义问题。
+- 优点：继承LSTM时序建模能力；注意力机制自适应筛选关键信息，缓解长文本前部信息丢失；模型具备可解释性，可可视化词语权重；特征聚合方式更加合理。
+- 缺点：LSTM串行计算存在训练速度短板；注意力模块引入额外参数，增大计算开销；底层依旧使用静态GloVe词向量，无法解决一词多义问题。
 
 | 项目 | 内容 |
 | ---- | ---- |
-| 核心功能 | 注意力增强时序模型，通过LSTM提取完整时序特征，利用注意力机制自适应分配权重，加权聚合全局语义表征。 |
-| 输入形式 | 按语序排列的GloVe词向量时序序列 $\{\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T\}$。 |
-| 特征提取流程 | GloVe词向量序列输入LSTM→输出全部时序隐状态序列→注意力层计算各位置权重→加权求和得到全局特征向量 $\boldsymbol{r}$→全连接层完成分类。 |
+| 核心功能 | 注意力增强时序模型，通过LSTM提取完整时序特征，利用注意力自适应分配权重，加权聚合全局语义表征。 |
+| 输入形式 | 按语序排列的GloVe词向量时序序列 $e_1,e_2,\dots,e_T$。 |
+| 特征提取流程 | GloVe词向量序列输入LSTM→输出全部时序隐状态序列→注意力层计算各位置权重→加权求和得到全局特征向量 $r$→全连接层完成分类。 |
 | 计算特性 | LSTM串行运算叠加注意力权重求解，计算开销高于基础LSTM。 |
-| 优势 | 充分保留全部时序信息，自动聚焦关键词；克服基础LSTM末端状态信息损失问题；特征表征效果更优。 |
-| 局限性 | 训练速度较慢；引入注意力增加参数量；依赖静态词向量，不具备动态语义编码能力。 |
-
+| 优势 | 完整保留全部时序信息，自动聚焦关键词；克服基础LSTM末端状态信息损失问题，特征表征效果更优。 |
+| 局限性 | 训练速度较慢；注意力带来额外参数量；依赖静态词向量，不具备动态语义编码能力。 |
 
 ##     
 ### Word2Vec+RF
