@@ -3,7 +3,7 @@
 实验环境：Kaggle Notebook（GPU加速），Python3，代码由原始Python2.7教程迁移改造。
 
 ## 静态预训练词向量模型
-静态预训练词向量的核心作用，就是把文本里的每一个单词，转换成计算机能看懂的一组小数向量。  例如 apple:[0.56,0.48,0.24...]  cat:[0.19,0.42,0.96...]
+静态预训练词向量的核心作用，就是把文本里的每一个单词，转换成计算机能看懂的一组小数向量。  例如 apple:[0.56,0.48,0.24...]  cat:[0.19,0.42,0.96...]     
 相比传统词袋模型只统计单词出现次数、不区分语义的问题，Word2Vec和GloVe可以让语义相似的单词，在向量空间里距离更近，更好地表达词语含义。之所以叫静态，是因为每个单词训练完成后只有唯一固定的向量，不会根据句子的上下文发生变化，无法区分一词多义。  
 
 ### Word2Vec  
@@ -259,4 +259,138 @@ TextCNN 只统计词语情感倾向，**无法区分评价对象**，分不清�
 - 当前仅使用最大池化，容易被单个强极性词汇主导预测结果。可以采用**最大池化 + 平均池化拼接**，同时保留显著情感特征与全局文本特征，缓解混合情感文本误判问题；也可引入轻量注意力机制，让模型自动聚焦文本中表达核心观点的语句，降低无关干扰内容的权重。
 - 目前采用单一 GloVe 预训练向量微调。可以设置可选模式：区分低频词与高频词，支持冻结 / 解冻 Embedding 层。
 - 另外还采用余弦退火学习率调度，EarlyStopping 早停 + 保存最优模型
+
+
+### GloVe + LSTM 模型原理
+GloVe+LSTM是预训练静态词向量结合循环神经网络的文本分类模型，整体分为词向量表征、时序特征提取、分类输出三个阶段。
+
+#### 1. GloVe词向量层
+GloVe属于静态预训练词向量，融合全局词语共现统计与局部上下文信息训练得到。文本分词后，每个词语加载预训练GloVe权重转化为低维稠密词向量，按照文本语序依次排列，构成时序向量序列送入LSTM。词向量固定不变，无法区分一词多义，但具备可靠的全局语义表征能力。
+
+#### 2. LSTM特征提取层
+LSTM对传统RNN存在的梯度消失问题进行优化，依靠遗忘门、输入门、输出门共同调控细胞状态：
+- 按照文本顺序逐时序读取词向量，持续更新隐藏状态；
+- 通过三门控机制选择性保留、丢弃历史语义信息，有效捕捉长距离上下文依赖；
+- 遍历完整序列后，取最后时刻隐藏状态作为整条文本的时序特征向量。
+模型能够感知词语语序差异引发的语义变化，但采用串行计算，训练耗时高于TextCNN。
+
+#### 3. 分类输出层
+将LSTM输出的文本特征送入全连接层，配合激活函数与Softmax，输出文本类别预测结果。
+
+#### 4. 完整流程
+1. 文本预处理：分词、去除停用词；
+2. 词语映射为GloVe预训练词向量，组成时序向量序列；
+3. LSTM逐时序处理向量序列，学习上下文时序语义；
+4. 时序特征传入全连接层，完成情感分类预测。
+
+#### 5. 优缺点
+**优点**
+- GloVe词向量融合全局统计信息，语义表达质量较高；
+- LSTM具备时序建模能力，重视词语语序，能够捕获长距离上下文依赖；
+- 稠密词向量解决词袋模型高维稀疏问题。
+
+**缺点**
+- GloVe属于静态词向量，无法处理一词多义现象；
+- LSTM串行逐词运算，训练速度较慢；
+- 仅依靠最终时刻状态容易丢失文本前部关键信息。
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | GloVe预训练词向量 + LSTM循环网络，静态词向量结合时序循环网络的文本分类模型 |
+| 词向量表征层 | 采用融合全局词共现统计与局部上下文的GloVe静态词向量；分词词语映射为稠密向量，按语序组成时序序列送入网络，向量固定，无法区分一词多义 |
+| 特征提取模块 | LSTM依靠遗忘门、输入门、输出门调控细胞状态，按顺序逐词处理向量序列，捕捉长距离上下文依赖；可以识别语序带来的语义差异，串行计算，训练速度较慢 |
+| 分类输出模块 | LSTM输出的时序特征送入全连接层，结合激活函数与Softmax实现文本分类预测 |
+| 整体流程 | 文本预处理→词语转换为GloVe时序词向量序列→LSTM提取上下文时序特征→全连接层完成情感分类预测 |
+| 优势 | GloVe语义表征效果较好；LSTM可建模长距离语义依赖，对语序敏感；稠密向量规避词袋高维稀疏问题 |
+| 局限性 | 静态词向量无法解决一词多义；串行运算训练开销大；仅使用末端隐藏状态容易损失前文有效信息 |   
+#### 结果   
+
+#### 结果分析   
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| lstm.csv | 0.87652 |
+| lstm(1).csv | 0.79920 |
+| lstm (2).csv | 0.88032 |  
+| lstm (3).csv | 0.89368 |  
+| lstm (4).csv | 0.89420 |  
+
+#### 结果分析及修改方案   
+
+##### 第一版代码    
+###### 结果分析   
+1. 当前模型只拿时序最后时刻拼接输出，**全局语义捕捉不足**；  
+2. 无正则，容易过拟合，简单关键词就直接判定极性；   
+3. 词向量冻结，无法微调适配 IMDB 数据集语境；  
+4. 没有 Dropout，泛化能力差；  
+5. 损失函数平等看待两类样本，对负样本识别不足。
+
+###### 修改方案  
+1. **向量放开微调**  
+原先冻结 GloVe，模型无法学习 IMDB 影评特有表达方式，对讽刺、隐性情感识别差。  
+2. **增加最大池化 + 最后时序拼接**  
+原来只使用 LSTM 最后一步输出，长文本远端情感信息丢失；池化可以抓取全局关键信息，改善叙事类文本预测。  
+3. **类别权重 `class_weights = [1.2, 1.0]`**  
+针对性解决：**真实 0 (负样本) 大量被预测为 1**，加大负样本损失惩罚。  
+如果依然负样本误判多，可以调高到 `[1.3,1.0]`。  
+4. **加入 Dropout、梯度裁剪、学习率衰减**  
+抑制过拟合，增强泛化，提升陌生弱情感文本识别能力。
+
+##### 第二版代码   
+###### 结果分析  
+1. **放开 Embedding 微调 + 无充足正则**：GloVe 预训练权重在小数据集上微调极易破坏通用语义，反而效果不如冻结；  
+2. **类别权重设置不当**，负样本惩罚过高，模型矫枉过正；  
+3. 新增 Dropout、特征融合、学习率调度叠加在一起，超参不匹配，训练很难收敛；  
+4. 原基线本身是**冻结词向量、极简结构**，贸然一次性堆所有改进，风险极高。
+
+
+###### 修改方案    
+退回你最初原版代码，只做最小、精准的单点优化，杜绝一堆修改堆在一起互相冲突
+1. 网络结构完全和初始代码一模一样；
+2. 词向量保持冻结；
+3. **暂时删掉 dropout、删掉梯度裁剪、关闭学习率调度**；
+4. 只保留可选类别权重（如果权重带来掉点，直接删掉）；
+5. 仅优化打印逻辑（过滤 padding、清空 error_cases）。
+
+##### 第三版代码   
+###### 结果分析  
+只拼接 `states[0] + states[-1]`，仅依靠序列首尾，长文本中间情感信息丢失   
+###### 修改方案  
+1. **融合「首尾状态 + 全局最大池化」**，捕捉句子里最强情感关键词；
+2. 网络输入维度同步修正；
+3. 其余所有配置保持原样：冻结 GloVe、无额外 dropout、无梯度裁剪、损失函数不变；
+4. 保留全部业务代码、添加错误样本收集逻辑。
+
+##### 第四版代码
+###### 结果分析  
+此次，我在代码中加入输出错误案例模块来输出3条错误案例  
+【案例 1】
+真实标签：0，预测标签：1
+文本内容：i vaguely remember ben from my sci fi fandom days of the s i was doing several interviews bios of obscure actors actresses most notably ben actress fay spain and jody fair who played angela in s the young savages ben was one of the people at a low key sci fi con in chicago about when i had a nice chat with him and his career and life all these were published in some now long forgotten fanzine of the day wish i still had copies of those interviews but time marches on and any of those people surely wouldn t remember me at all so many years later ben was a really nice fellow ekeing out a living the cons of those days didn t even pay their guest unless of course they were big name stars and even then the pay was a couple hundred dollars at most good to know ben s still alive kicking how bout a remake of creature but years older ugly then uglier now   
+
+【案例 2】
+真实标签：1，预测标签：0
+文本内容：very good except for the ending which was a huge disappointment the script was very good as was the acting the visuals were often very grainy but this in a way added to the film as the snowy features were in good places that helped create a mood towards the film this affect was ruined by the extremely unbelievable ending i was going to give this film an out of ten but the ending knocked it down a point to because it seemed to depart radically from the first minutes of the movie and seemed quite forced at the end to make the film makers look clever this movie though was much better than films with quite a lot larger budgets and seemed to be filmed like a home movie with some extra equipment not much in the way of special effects as these go but for suspense it was very good   
+
+【案例 3】
+真实标签：0，预测标签：1
+文本内容：this hodge podge adapted from a gore vidal novel actually one of the great american writers makes the magic christian and valley of the dolls look like fellini art works raquel welch with an incredible body and she s actually not very tall in a lead role except for kansas city bomber when she was quite good playing rex reed s bad movie reviewer not critic alter ego only to be surrounded by drag queen great chick mae west horny john huston a young and naive farrah fawcett pre lee majors what a shame and other various creep azoids to pretend to spoof way too may things has nothing going for it except inter spliced old films clips i e widmark in kiss of death lena horne just so they can continue to bleed the life out of everyone a out of best performance it s so bad it s worth seeing     
+
+
+
+1. **案例 1、3（负样本 0 → 预测 1）**
+影评整体偏中性，夹杂少量正面词汇（`nice fellow`、`it's so bad it's worth seeing`），模型被局部正向短语带偏，**最大池容易抓取局部强正向词，忽略全文整体消极基调**。
+2. **案例 2（正样本 1 → 预测 0）**
+大量负面吐槽（`huge disappointment`、`unbelievable ending`），只是结尾扣分，**全文主体依然好评，但模型被连续负面词汇干扰**。
+
+
+###### 修改方案   
+**首尾状态 + MaxPool + MeanPool**
+
+- MaxPool：抓最强情感词；
+- MeanPool：全局平均，约束局部极端词汇，缓解中性文本被个别词语带偏；
+同时调整特征融合方式，增加一层 BN+Dropout 轻微正则，降低过拟合；
+冻结 GloVe、训练流程全部保留。
+    
+
+
   
