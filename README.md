@@ -628,7 +628,8 @@ LSTM对传统RNN存在的梯度消失问题进行优化，依靠遗忘门、输�
 | 实验版本 | 测试集准确率 |
 | ---- | ---- |
 | attention_lstm.csv | 0.87208 |
-| attention_;stm.csv | 0.90564 |  
+| attention_lstm(1).csv | 0.89052 |
+| attention_;stm.csv | 0.90864 |  
 
 #### 结果分析  
 ##### 第一版代码  
@@ -677,7 +678,135 @@ encoding = torch.cat([attention[0], attention[-1]], dim=1)
 2. 修改 embedding：`requires_grad=True` 开启词向量微调；
 3. LSTM 增加 dropout：`dropout=dropout if num_layers>1 else 0`  
 4.新增余弦学习率调度器 `CosineAnnealingLR`；  
-5.Embedding 输出后增加 `self.dropout`；分类头内部增加 Dropout，增强正则。
+5.Embedding 输出后增加 `self.dropout`；分类头内部增加 Dropout，增强正则。  
+##### 第二版代码  
+ 1. Attention 模块缺陷
+
+1）**没有 padding mask**
+句子长短不一，padding 位置（0）依然参与注意力权重计算。模型会关注无效填充 token，干扰语义表征，降低效果。
+2）接口不支持传入 mask，无法屏蔽 padding 位置。
+ 2. 模型 Decoder 分类头偏弱
+
+原始 decoder：
+
+```
+nn.Sequential(
+    nn.Linear(lstm_out_dim, lstm_out_dim),
+    nn.ReLU(),
+    nn.Dropout(dropout),
+    nn.Linear(lstm_out_dim, labels)
+)
+```
+
+- 缺少归一化（BatchNorm）；
+- 使用 ReLU，表达能力弱于 GELU；
+
+3. 损失函数
+
+标准`CrossEntropyLoss`，**没有标签平滑 label smoothing**，容易过拟合、对硬标签过分自信。
+
+ 4. 学习率调度策略简单
+
+只用`CosineAnnealingLR`，**缺少 warmup**。训练初期学习率直接拉满，容易震荡、破坏预训练 GloVe 词向量。  
+###### 修改方案  
+步骤 1：修改超参数区域
+
+新增 / 修改超参：
+
+```
+num_epochs = 8 → num_epochs = 12
+dropout_rate = 0.3 → dropout_rate = 0.4
+# 新增
+patience = 3
+warmup_epochs = 1
+# 新增模型保存路径
+BEST_MODEL_PATH = "/kaggle/working/result/best_model.pth"
+# 修改输出csv文件名
+RESULT_PATH = "/kaggle/working/result/attention_lstm_best.csv"
+```
+
+步骤 2：升级 Attention 类（支持 padding mask）
+
+原始 forward：只接收`lstm_output`
+新版改动：
+
+1. 增加形参`mask=None`
+2. 根据 mask 把 padding 位置分数设置 `-1e4`，softmax 后权重趋近于 0
+
+```
+def forward(self, lstm_output, mask=None):
+    seq_len, batch, _ = lstm_output.shape
+    attn_weights = torch.tanh(self.attn(lstm_output))
+    attn_scores = self.v(attn_weights).squeeze(-1)
+
+    # 新增mask逻辑
+    if mask is not None:
+        attn_scores = attn_scores.masked_fill(mask.T, -1e4)
+
+    attn_dist = F.softmax(attn_scores, dim=0)
+    weighted = lstm_output * attn_dist.unsqueeze(-1)
+    output = torch.sum(weighted, dim=0)
+    return output, attn_dist
+```
+
+步骤 3：升级 SentimentNet 网络
+
+1. Embedding 增加 `padding_idx=0`
+
+```
+self.embedding = nn.Embedding.from_pretrained(weight, padding_idx=0)
+```
+
+2. Forward 中构造 padding mask
+
+```
+pad_mask = (inputs == 0)
+```
+
+3. 调用 attention 时传入 mask
+
+```
+attn_pool, _ = self.attention(lstm_out, pad_mask)
+```
+
+4. 重构 decoder 序列：
+
+- 增加`nn.BatchNorm1d`
+- ReLU → GELU
+
+```
+self.decoder = nn.Sequential(
+    nn.BatchNorm1d(lstm_out_dim),
+    nn.Linear(lstm_out_dim, lstm_out_dim),
+    nn.GELU(),
+    nn.Dropout(dropout),
+    nn.Linear(lstm_out_dim, labels)
+)
+```
+
+步骤 4：新增 warmup 自定义学习率调度函数
+
+在模型定义外部新增函数：
+
+```
+def get_warmup_scheduler(optimizer, warmup_epoch, total_epoch):
+    def lr_lambda(epoch):
+        if epoch < warmup_epoch:
+            return (epoch + 1) / warmup_epoch
+        else:
+            progress = (epoch - warmup_epoch) / (total_epoch - warmup_epoch)
+            return 0.5 * (1 + torch.cos(torch.tensor(progress * torch.pi)))
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+同时删除原来的`CosineAnnealingLR`，替换调度器：
+
+```
+# 删除
+# scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+# 修改为
+scheduler = get_warmup_scheduler(optimizer, warmup_epochs, num_epochs)
+```
 
 
 ### GloVe + CNN-LSTM 模型原理
