@@ -30,7 +30,7 @@ Word2Vec、GloVe 仅能将单个单词转化为固定向量，只能表示孤立
 #### 1. 核心功能
 TextCNN 是适配文本任务的轻量化卷积网络，由图像CNN优化改造而来，核心作用是高效提取文本局部组合特征，聚焦词语搭配、短句语义，不依赖上下文记忆与语序逻辑，适配文本短语级特征挖掘。
 #### 2. 详细工作机制
-- 输入结构：以 GloVe 预训练词向量构成二维输入矩阵 $\boldsymbol{E}\in\mathbb{R}^{T\times d}$，$T$ 为句子单词数量，$d$ 代表词向量维度。
+- 输入结构：以 GloVe 预训练词向量构成二维输入矩阵  $\boldsymbol{E}\in\mathbb{R}^{T\times d}$ ，$T$ 为句子单词数量，$d$ 代表词向量维度。
 - 多尺度卷积核滑动采样：设置尺寸 $k=2,3,4$ 的卷积核，分别对应二元、三元、多元词语组合，单个卷积核权重矩阵 $\boldsymbol{W}\in\mathbb{R}^{k\times d}$。
 - 卷积特征计算：卷积核在词向量矩阵逐行滑动，对窗口内局部词向量加权运算，经过激活函数得到特征：
 $$
@@ -60,14 +60,14 @@ $$
 LSTM 是针对时序数据优化的循环神经网络，核心作用是解决传统RNN梯度消失问题，精准捕捉文本语序信息与长距离上下文依赖，挖掘全文时序语义逻辑，适用于长文本语义建模任务。
 #### 2. 详细工作机制
 - 输入结构：以 GloVe 预训练词向量时序序列 $\boldsymbol{e}_1,\boldsymbol{e}_2,\dots,\boldsymbol{e}_T$ 为输入，按照文本词语顺序逐词串行输入网络。
-- 遗忘门：控制丢弃上一时刻细胞状态信息：
+- 遗忘门：控制丢弃上一时刻细胞状态信息：  
 $$
 \boldsymbol{f}_t=\sigma\left(\boldsymbol{W}_f\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_f\right)
-$$
-- 输入门：筛选当前时刻需要存入细胞状态的新信息：
-$$
+$$  
+- 输入门：筛选当前时刻需要存入细胞状态的新信息：   
+$$   
 \boldsymbol{i}_t=\sigma\left(\boldsymbol{W}_i\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_i\right),\quad \tilde{\boldsymbol{c}}_t=\tanh\left(\boldsymbol{W}_c\left[\boldsymbol{h}_{t-1},\boldsymbol{e}_t\right]+\boldsymbol{b}_c\right)
-$$
+$$   
 - 细胞状态更新：结合遗忘门与输入门更新长期记忆：
 $$
 \boldsymbol{c}_t=\boldsymbol{f}_t\odot\boldsymbol{c}_{t-1}+\boldsymbol{i}_t\odot\tilde{\boldsymbol{c}}_t
