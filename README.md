@@ -622,8 +622,62 @@ LSTM对传统RNN存在的梯度消失问题进行优化，依靠遗忘门、输�
 | 分类输出模块 | 注意力加权融合后的全局文本特征送入全连接层，结合激活函数与Softmax实现文本分类预测 |
 | 整体流程 | 文本预处理→词语转换为GloVe时序词向量序列→LSTM提取全时序上下文特征→Attention加权优化特征→全连接层完成情感分类预测 |
 | 优势 | GloVe语义表征稳定；LSTM擅长长时序依赖建模；注意力机制解决信息丢失问题，精准捕捉核心语义，分类精度更高 |
-| 局限性 | 静态词向量无法解决一词多义；LSTM串行运算训练效率低；注意力结构增加模型计算成本 |
+| 局限性 | 静态词向量无法解决一词多义；LSTM串行运算训练效率低；注意力结构增加模型计算成本 |  
 
+#### 结果  
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| attention_lstm.csv | 0.87208 |
+| attention_;stm.csv | 0.90564 |  
+
+#### 结果分析  
+##### 第一版代码  
+1. Attention 实现缺陷（最关键）
+
+```
+class Attention(nn.Module):
+    def forward(self, inputs):
+        x = inputs
+        u = torch.tanh(torch.matmul(x, self.w_omega))
+        att = torch.matmul(u, self.u_omega)
+        att_score = F.softmax(att, dim=1)
+        outputs = x * att_score
+        return outputs
+```
+
+- `softmax(dim=1)`：**在序列维度做 softmax 逻辑没问题，但输出只是加权后的序列，没有求和压缩**
+- 返回的依然是 `[seq_len,batch,dim]` 三维张量，后续强行拼接 `attention[0], attention[-1]`，本质还是在用首尾隐状态，**注意力完全没有起到聚合句子表征的作用**，相当于伪注意力。
+- 参数初始化方式老旧，没有分离注意力权重与上下文向量。
+
+ 2. 模型 Forward 逻辑缺陷
+
+```
+states, _ = self.encoder(embeddings.permute(1, 0, 2))
+attention = self.attention(states)
+encoding = torch.cat([attention[0], attention[-1]], dim=1)
+```
+
+1. LSTM 输出 `states.shape=[seq_len,batch,hidden*2]`
+2. Attention 只做加权、不求和，依旧保留序列长度
+3. 强行取第 0 条与最后一条时间步拼接，**浪费注意力权重**，注意力权重没有聚合整句信息。
+
+> 
+> 正确思路：用注意力权重对全部时序加权求和，得到**单个句子向量 [batch,dim]**。
+
+ 3. 网络训练相关缺陷
+
+1. `self.embedding.weight.requires_grad = False`：词向量冻结，无法微调 GloVe，表达能力受限；
+2. LSTM 没有设置 dropout，缺少正则，容易过拟合；
+3. 没有梯度裁剪、没有 L2 权重衰减；
+4. 学习率 `lr=0.01` 偏大，容易震荡不收敛；
+5. 无学习率调度策略；
+6. 输出层只有单层 Linear，缺少激活与 Dropout。
+###### 修改方案  
+1.新版 Attention：加权求和，输出**固定维度句向量**  
+2. 修改 embedding：`requires_grad=True` 开启词向量微调；
+3. LSTM 增加 dropout：`dropout=dropout if num_layers>1 else 0`  
+4.新增余弦学习率调度器 `CosineAnnealingLR`；  
+5.Embedding 输出后增加 `self.dropout`；分类头内部增加 Dropout，增强正则。
 
 
 ### GloVe + CNN-LSTM 模型原理
