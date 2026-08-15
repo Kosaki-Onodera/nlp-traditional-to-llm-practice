@@ -859,7 +859,232 @@ LSTM优化了传统RNN梯度消失问题，通过遗忘门、输入门、输出�
 | 分类输出模块 | LSTM融合后的全局特征送入全连接层，结合激活函数与Softmax实现文本分类预测 |
 | 整体流程 | 文本预处理→GloVe词向量映射→CNN提取局部短语特征→LSTM建模时序上下文→全连接层输出分类结果 |
 | 优势 | 融合CNN局部特征优势与LSTM时序建模优势；词向量语义质量高；特征信息维度丰富，适配复杂文本任务 |
-| 局限性 | 静态词向量不具备动态语义能力；模型结构复杂、训练速度慢；CNN窗口固定，灵活性有限 |
+| 局限性 | 静态词向量不具备动态语义能力；模型结构复杂、训练速度慢；CNN窗口固定，灵活性有限 |  
+#### 结果  
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| cnn_lstmcsv | 0.59392 |
+| cnn_lstm(1).csv | 0.89180 |
+| cnn_lstm(2).csv | 0.89976 |    
+#### 结果分析  
+##### 第一版代码  
+1）**只有单一卷积核（filter_size=3）**，只能捕捉 3 词局部特征，无法获取长短不同的短语语义；没有多尺度 CNN。
+2）CNN 输出全部下采样后送入 LSTM；**缺少独立全局 CNN 特征分支**；仅依靠 LSTM 首尾隐状态作为最终特征，表征单一。
+3）词向量冻结：`embedding.weight.requires_grad = False`，无法微调 GloVe 预训练权重，适配 IMDB 语料能力弱。
+4）无 Dropout，缺少正则，极易过拟合；LSTM 内部`dropout=0`。
+5）输出维度计算硬编码：仅拼接 LSTM 首尾向量，特征维度低。  
+6）优化器使用**SGD**：收敛速度慢，自适应能力弱；
+7）学习率 `lr=0.01` 搭配 SGD 容易震荡；**无学习率调度器**；
+8） 无梯度裁剪，存在梯度爆炸风险；
+9） **不保存最优模型、无早停机制**：训练结束直接使用最后一轮权重预测，最后 epoch 大概率过拟合。  
+###### 修改方案  
+步骤 1：更新路径与超参
+
+1. 新增最优模型保存路径常量
+
+```
+BEST_MODEL_PATH = "/kaggle/working/result/best_model.pth"
+```
+
+2. 修改、新增超参数
+
+```
+num_epochs = 10 → 15
+num_hiddens = 64 → 128
+lr = 0.01 → lr = 1e-3
+# 单一卷积参数
+filter_size = 3
+# 修改为多尺度卷积列表
+filter_sizes = [3, 4, 5]
+# 新增
+dropout_rate = 0.3
+grad_clip = 5.0
+patience = 3
+```
+
+3. 设备自动兼容写法
+
+```
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+```
+
+步骤 2：重构 SentimentNet 网络类
+
+（1）**init** 参数变更
+
+入参 `filter_size` → `filter_sizes`，新增 `dropout` 参数。
+
+```
+def __init__(self, embed_size, num_filter, filter_sizes, num_hiddens, num_layers, bidirectional, weight, labels, dropout=0.3, **kwargs)
+```
+
+（2）Embedding 模块升级
+
+```
+# 旧
+self.embedding.weight.requires_grad = False
+# 新
+self.embedding.weight.requires_grad = True
+self.drop_emb = nn.Dropout(dropout)
+```
+
+（3）搭建双分支结构（核心改动）
+
+原始结构：Embedding → 单 Conv1d → MaxPool → LSTM → 首尾拼接 → Linear
+新版两条并行分支：
+
+- 分支 A：**多尺度 CNN（3/4/5 卷积核）+ 全局最大池**，提取全局短语特征；
+- 分支 B：保留原单尺度卷积 + 池化，送入 LSTM 提取序列时序特征；
+
+```
+# 多尺度卷积模块列表
+self.convs = nn.ModuleList([
+    nn.Conv1d(embed_size, num_filter, fs, padding=fs // 2)
+    for fs in filter_sizes
+])
+# 给LSTM提供序列输入的单尺度卷积
+self.conv_for_lstm = nn.Conv1d(embed_size, num_filter, kernel_size=3, padding=1)
+```
+
+（4）LSTM 开启内部 dropout
+
+```
+dropout=dropout if num_layers > 1 else 0
+```
+
+（5）输出层维度修改
+
+分类输入 = LSTM 首尾特征 + 多尺度 CNN 全局特征拼接
+
+```
+self.decoder = nn.Linear(lstm_out_dim * 2 + cnn_global_dim, labels)
+```
+
+（6）重写 forward 前向传播
+
+1. embedding 后加入 dropout；
+2. 循环计算多尺度卷积 + 全局池，拼接得到全局特征；
+3. 保留原有卷积、池化送入 LSTM 逻辑；
+4. 两路特征融合，融合后增加 dropout 送入分类头。
+
+步骤 3：优化器与学习率调度替换
+
+```
+# 旧
+optimizer = optim.SGD(net.parameters(), lr=lr)
+# 新
+optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
+# 新增自适应学习率调度器（基于验证集精度调整）
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1)
+```
+##### 第二版代码  
+1. LSTM 时序特征仅简单拼接**首时刻、末时刻隐状态**，忽略句子中间关键情感片段；长文本信息丢失严重。
+2. 没有时序注意力机制，无法自动赋予句子重点词语更高权重。
+3. 时序特征来源单一，缺少全局平均时序特征作为补充。
+4. Dropout 固定 0.3，embedding 层没有单独衰减控制；
+5. 学习率 `1e-3`、早停阈值`patience=3`、学习率衰减系数有优化空间。
+###### 修改方案  
+步骤 1：修改路径与超参数
+
+1. 修改输出文件名
+
+```
+RESULT_PATH = "/kaggle/working/result/cnnlstm_att.csv"
+```
+
+2. 更新超参
+
+```
+lr = 1e-3 → lr = 8e-4
+dropout_rate = 0.3 → 0.35
+patience = 3 → 4
+```
+
+步骤 2：新增独立 Attention 注意力模块
+
+在 SentimentNet 类外部定义注意力类：
+
+```
+class Attention(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.attn = nn.Linear(hidden_dim, hidden_dim)
+        self.v = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, lstm_output):
+        # lstm_output: [seq_len, batch, hidden]
+        attn_weights = torch.tanh(self.attn(lstm_output))
+        score = self.v(attn_weights).squeeze(-1)    # [seq_len, batch]
+        alpha = F.softmax(score, dim=0)
+        weighted = lstm_output * alpha.unsqueeze(-1)
+        attn_out = torch.sum(weighted, dim=0)       # [batch, hidden]
+        return attn_out
+```
+
+步骤 3：改造 SentimentNet 网络结构
+
+（1）Embedding dropout 调整
+
+```
+# 旧
+self.drop_emb = nn.Dropout(dropout)
+# 新
+self.drop_emb = nn.Dropout(dropout * 0.6)
+```
+
+（2）注册注意力层
+
+在 LSTM 定义之后添加：
+
+```
+self.attention = Attention(lstm_out_dim)
+```
+
+（3）修改分类层输入维度
+
+旧：`lstm_out_dim * 2 + cnn_global_dim`
+新：`lstm_out_dim * 3 + cnn_global_dim`
+
+```
+self.decoder = nn.Linear(lstm_out_dim * 3 + cnn_global_dim, labels)
+```
+
+（4）重写 forward 函数 LSTM 分支逻辑（核心改动）
+
+旧逻辑：
+
+```
+states, _ = self.encoder(lstm_in)
+lstm_feature = torch.cat([states[0], states[-1]], dim=1)
+fusion = torch.cat([lstm_feature, cnn_global_pool], dim=1)
+```
+
+新版逻辑改动点：
+
+1. 接收 LSTM 完整输出与隐状态 `states, (h_n, _) = self.encoder(lstm_in)`
+2. 使用 Attention 对全部时序输出加权得到`attn_feature`
+3. 双向 LSTM 最后一层隐状态拼接 `last_hidden = torch.cat([h_n[-2], h_n[-1]], dim=1)`
+4. 新增时序全局平均特征 `mean_seq = torch.mean(states, dim=0)`
+5. **三路时序特征 + CNN 全局特征融合**
+
+```
+fusion = torch.cat([attn_feature, last_hidden, mean_seq, cnn_global_pool], dim=1)
+```
+
+> 
+> 时序三路特征说明：
+> attn_feature：注意力加权重点时序特征
+> last_hidden：句子首尾隐状态
+> mean_seq：整段序列平均特征
+
+步骤 4：调整学习率调度器参数
+
+```
+# 旧
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1)
+# 新
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.6, patience=1)
+```
 
 
 
