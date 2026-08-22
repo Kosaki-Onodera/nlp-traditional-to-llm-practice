@@ -1675,6 +1675,204 @@ Transformer 是一个完全基于**自注意力（Self-Attention）机制**的�
 6. mask‑max 池化正确处理 padding，padding 位置设置‑inf，不会被 max 取到 padding 零向量。
 
 
+## bert_native 模型原理
+
+bert_native 是基于 BERT 预训练语言模型并采用**手动训练循环**的文本分类实现，整体分为 BERT 动态词向量编码、分类输出、手动训练控制三个阶段。
+
+#### 1. BERT 词向量编码层
+
+BERT（Bidirectional Encoder Representations from Transformers）基于 Transformer Encoder 架构，通过多层双向自注意力机制对输入文本进行深度编码。文本经 WordPiece 分词后，使用 `BertTokenizerFast` 将词语转换为 `input_ids` 和 `attention_mask`，送入预训练的 `bert-base-uncased` 模型。BERT 的核心优势在于生成**动态上下文词向量**——同一词语在不同语境下获得不同的表征，有效解决一词多义问题。模型输出 `[CLS]` 位置的向量作为整个句子的语义摘要，该向量融合了全文双向上下文信息。
+
+#### 2. 分类输出层
+
+`BertForSequenceClassification` 在 BERT 主体之上自动添加了分类头：取 `[CLS]` 向量经 Dropout 正则化后，送入全连接线性层将隐藏维度映射到二分类输出空间（`num_labels=2`），并通过交叉熵损失函数计算分类损失。整个过程由官方模型封装，无需手动实现分类器构造与损失计算。
+
+#### 3. 手动训练流程
+
+与使用高级 API 不同，本实现**完全手动编写训练循环**。自定义 `torch.utils.data.Dataset` 封装编码后的数据，使用 `DataLoader` 按批次加载（训练 batch_size=8，验证 batch_size=16），采用 `AdamW` 优化器（学习率 5e-5），训练 3 个 epoch。每个 epoch 内手动执行：前向传播 → 损失计算 → 反向传播 → 梯度更新。通过 `tqdm` 在每个 batch 和 epoch 结束时实时打印训练/验证损失与准确率，训练结束后手动遍历测试集生成预测结果并保存为 CSV。
+
+#### 4. 完整流程
+
+1. 文本数据读取与预处理，按 8:2 划分训练集与验证集；
+2. 使用 BERT Tokenizer 对文本进行 WordPiece 分词、编码、填充与截断；
+3. 自定义 Dataset 类封装编码后的数据；
+4. 手动循环 3 个 epoch，逐批次执行前向/反向传播更新参数；
+5. 每个 epoch 结束后在验证集上评估性能；
+6. 训练完成后对测试集进行预测，输出 CSV 结果文件。
+
+#### 5. 优缺点
+
+**优点**
+- 完全控制训练细节，便于插入自定义逻辑（如梯度裁剪、自定义学习率调度）；
+- 适合调试、教学或对训练过程有特殊需求的场景；
+- BERT 动态词向量能力优于静态 GloVe，可有效处理一词多义。
+
+**缺点**
+- 代码量大，需手动管理设备转移、梯度清零、损失累加等；
+- 缺乏高级 API 的自动化优化（如混合精度训练、分布式支持、早停等）；
+- 训练效率较低，易引入人为编码错误。
+
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | 预训练 BERT 编码器 + 官方分类头 + 手动训练循环 |
+| 词向量表征层 | 采用 BERT 动态上下文词向量，同一词语在不同语境下表征不同；使用 WordPiece 子词分词，有效解决一词多义及未登录词问题 |
+| 特征提取模块 | BERT 多层双向 Transformer Encoder 通过自注意力机制同时捕捉双向上下文依赖，输出 `[CLS]` 向量作为句子级表征 |
+| 分类输出模块 | `[CLS]` 向量经 Dropout 后送入线性分类层，通过交叉熵损失优化二分类任务 |
+| 整体流程 | 文本分词编码 → BERT 提取动态上下文表征 → 分类头输出预测 → 手动循环训练优化 |
+| 优势 | BERT 动态词向量语义表征能力强；手动训练灵活可控；适合学习 Transformer 训练底层流程 |
+| 局限性 | 代码冗余度高；缺乏高级 API 自动化优化；大规模实验效率偏低 |    
+
+#### 结果  
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| bert_native.csv | 0.87996 |
+| bert_native(1).csv | 0.88540 |
+| bert_native(2).csv | 0.91692 |   
+
+
+## bert_scratch 模型原理
+
+bert_scratch 的核心特点是**从零自定义 BERT 分类模型结构**（继承 `BertPreTrainedModel`），配合 Hugging Face 的 `Trainer` 高级训练 API 完成训练。整体分为自定义 BERT 分类模型构建、数据预处理与 Trainer 自动训练三个阶段。
+
+#### 1. 自定义 BERT 分类模型（BertScratch）
+
+与直接使用 `BertForSequenceClassification` 不同，本模型手动构建了分类头部。继承自 `BertPreTrainedModel`，保留预训练 BERT 的权重加载能力。在 `__init__` 方法中显式定义：
+- `self.bert = BertModel(config)` —— BERT 主体编码器；
+- `self.dropout = nn.Dropout(classifier_dropout)` —— 防止过拟合；
+- `self.classifier = nn.Linear(config.hidden_size, config.num_labels)` —— 线性分类层。
+
+在 `forward` 方法中手动实现前向逻辑：调用 `self.bert` 获取输出，取 `pooled_output`（即 `[CLS]` 向量），经 Dropout 后送入分类器得到 `logits`，显式调用 `nn.CrossEntropyLoss` 计算损失，并封装为 `SequenceClassifierOutput` 返回。
+
+#### 2. BERT 编码层
+
+与 bert_native 一致，使用预训练的 `bert-base-uncased` 权重初始化 BERT 主体，通过多层双向自注意力生成上下文相关的动态词向量。文本经 WordPiece 分词后编码为 `input_ids` 和 `attention_mask`，BERT 输出 `[CLS]` 向量作为句子级表征供分类头使用。
+
+#### 3. Trainer 高级训练流程
+
+本实现使用 Hugging Face 的 `Trainer` API 自动化管理训练过程。使用 `datasets.Dataset` 封装数据，配合 `map` 函数批量分词；采用 `DataCollatorWithPadding` 动态填充批次序列以提升效率；通过 `TrainingArguments` 配置训练参数（epochs=3，batch_size=6/12，权重衰减等）。`Trainer` 自动执行训练循环、梯度更新、验证评估、日志记录与指标计算。自定义 `compute_metrics` 函数使用准确率评估验证集性能，训练完成后直接调用 `trainer.predict()` 生成测试集预测。
+
+#### 4. 完整流程
+
+1. 数据读取并按 8:2 划分训练/验证集；
+2. 将 Pandas DataFrame 转换为 `datasets.Dataset` 格式；
+3. 使用 BERT Tokenizer 批量分词编码；
+4. 自定义 `BertScratch` 类，手动构建 BERT 分类模型结构；
+5. 配置 `TrainingArguments`，初始化 `Trainer`，传入模型、数据集、数据整理器、评估函数；
+6. 调用 `trainer.train()` 自动完成 3 个 epoch 的训练与验证；
+7. 调用 `trainer.predict()` 生成测试预测并保存结果。
+
+#### 5. 优缺点
+
+**优点**
+- 清晰展示 BERT 分类模型内部的构造细节（Dropout、分类器、损失计算），适合学习；
+- `Trainer` API 大幅简化训练流程，自动处理设备转移、批次迭代、日志保存等；
+- 代码量适中，兼顾可读性与工程效率。
+
+**缺点**
+- 自定义分类头与官方 `BertForSequenceClassification` 功能完全一致，实际项目无必要；
+- 相比直接使用官方模型，增加了维护成本和出错风险；
+- 未充分利用 `Trainer` 的全部高级功能（如回调、超参数搜索等）。
+
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | 自定义继承 `BertPreTrainedModel` 的分类模型 + Trainer 训练 API |
+| 词向量表征层 | BERT 动态上下文词向量，基于 WordPiece 分词，支持一词多义与未登录词处理 |
+| 特征提取模块 | BERT 主体（`BertModel`）提取双向上下文特征，输出 `pooled_output` 作为句子级表征 |
+| 分类输出模块 | 手动构建 `Dropout` + `Linear` 分类头，显式计算交叉熵损失，封装为标准输出格式 |
+| 整体流程 | 文本分词编码 → BERT 提取动态表征 → 手动构建分类头输出 → Trainer 自动训练优化 |
+| 优势 | 揭示 BERT 分类模型内部实现细节；`Trainer` 提升训练效率与自动化程度；适合教学理解 |
+| 局限性 | 自定义分类头冗余，与官方实现功能重复；工程实用性低于直接使用官方模型 |    
+
+#### 结果  
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| bert_scratch.csv | 0.91948 |
+之后的改动均为分数降低，不再记录
+
+
+## bert_trainer 模型原理
+
+bert_trainer 是**最简洁、最推荐**的实现方式，直接使用 Hugging Face 官方提供的 `BertForSequenceClassification` 预训练模型，配合 `Trainer` 高级训练 API，以最少代码完成高质量文本分类。整体分为 BERT 编码层、官方分类头、Trainer 标准化训练三个阶段。
+
+#### 1. BERT 编码层
+
+与上述两个模型一致，采用 `bert-base-uncased` 预训练权重。通过 `BertTokenizerFast` 对文本进行 WordPiece 分词、编码、填充与截断；BERT 的多层双向自注意力机制生成**动态上下文词向量**，每个 token 的表示随语境动态变化；输出 `[CLS]` 位置的向量作为整个句子的语义摘要。
+
+#### 2. 官方分类头
+
+直接加载 `BertForSequenceClassification.from_pretrained('bert-base-uncased')`，该模型包含 BERT 主体编码器、预置分类头（`Dropout` → `Linear(hidden_size, num_labels)`）以及内置的交叉熵损失计算逻辑，无需手动实现分类器构造与损失计算。
+
+#### 3. Trainer 标准化训练
+
+采用 `Trainer` API 自动化训练：使用 `datasets.Dataset` 和 `DataCollatorWithPadding` 高效管理数据；通过 `TrainingArguments` 配置超参数（batch_size=16/32，较前两者更大）；自动执行多轮训练、验证评估、指标计算、日志保存；自定义 `compute_metrics` 计算准确率用于验证集评估。所有训练过程由 `Trainer` 统一管理，无需编写循环代码。
+
+#### 4. 完整流程
+
+1. 数据读取、划分训练/验证集；
+2. 转换为 `datasets.Dataset` 格式；
+3. 批量分词编码；
+4. **一步加载**官方 `BertForSequenceClassification` 预训练模型；
+5. 配置 `TrainingArguments`，初始化 `Trainer`；
+6. 调用 `trainer.train()` 完成 3 个 epoch 训练；
+7. 调用 `trainer.predict()` 生成测试集预测并输出结果。
+
+#### 5. 优缺点
+
+**优点**
+- **代码最简洁**，仅需约 60 行即可完成完整训练与预测；
+- 官方 `BertForSequenceClassification` 经大量验证，稳定可靠；
+- `Trainer` 内置混合精度训练、分布式训练、梯度累积等高级特性，可无缝扩展；
+- 最适合生产环境、竞赛、快速原型验证。
+
+**缺点**
+- 封装程度高，对初学者来说"黑盒"感较强，不利于理解底层细节；
+- 自定义灵活性相对较低（如需修改损失函数或模型结构，需额外处理）。
+
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | 官方 `BertForSequenceClassification` 预训练模型 + Trainer 高级训练 API |
+| 词向量表征层 | BERT 动态上下文词向量，通过 WordPiece 分词和双向自注意力实现语义感知 |
+| 特征提取模块 | 多层 Transformer Encoder 提取双向上下文特征，`[CLS]` 向量聚合为句子级表征 |
+| 分类输出模块 | 官方内置分类头（Dropout + Linear）；损失计算内置于模型前向过程 |
+| 整体流程 | 文本分词编码 → BERT 提取动态表征 → 官方分类头输出预测 → Trainer 全自动训练优化 |
+| 优势 | 代码量最少，开发效率最高；充分利用官方模型稳定性与 `Trainer` 高级优化功能；适合快速部署与生产落地 |
+| 局限性 | 高度封装不利于教学理解；自定义损失函数或模型结构需额外操作 |     
+
+#### 结果   
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| bert_trainer.csv | 0.93236 |
+| bert_trainer(1).csv | 0.93884 |
+  
+
+
+
+## 三个模型的综合对比
+
+| 维度 | bert_native | bert_scratch | bert_trainer |
+|------|-------------|--------------|---------------|
+| **模型来源** | 官方 `BertForSequenceClassification` | 自定义 `BertScratch`（继承 `BertPreTrainedModel`） | 官方 `BertForSequenceClassification` |
+| **分类头实现** | 官方内置 | 手动编写（Linear + Dropout + CrossEntropyLoss） | 官方内置 |
+| **训练流程** | 手动 `for` 循环 | Hugging Face `Trainer` | Hugging Face `Trainer` |
+| **数据格式** | 自定义 `torch.utils.data.Dataset` | `datasets.Dataset` | `datasets.Dataset` |
+| **批次填充** | 统一 padding（固定长度） | `DataCollatorWithPadding`（动态填充） | `DataCollatorWithPadding`（动态填充） |
+| **代码复杂度** | 高（约 150 行） | 中（约 100 行） | 低（约 60 行） |
+| **适用场景** | 教学 / 需要精细控制训练细节 | 学习 BERT 内部结构 | 生产 / 竞赛 / 快速实验 |
+| **底层原理** | BERT 动态词向量 + 分类微调 | BERT 动态词向量 + 分类微调 | BERT 动态词向量 + 分类微调 |
+
+## 总结
+
+三个模型的 BERT 底层原理完全一致，差异仅在于：
+
+1. **如何构建分类头**——官方内置 vs 手动编写；
+2. **如何管理训练过程**——手动循环 vs Trainer API。
+
+推荐优先使用 **bert_trainer** 方式，因其兼顾开发效率与模型可靠性，是 Hugging Face 生态的标准实践。
+
+
 
     
 
