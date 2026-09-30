@@ -2620,6 +2620,251 @@ distilbert_trainer
 3. **增加数据集长度打印、训练耗时打印**
 4. **预测阶段增加 batch_size，加快推理速度**
 5. **增加随机种子固定**：保证复现结果
+## RoBERTa-large 模型原理
+
+RoBERTa = "Robustly optimized BERT approach"，是 Meta 在 BERT 基础上改进的版本。值得先说清楚一点：**它的模型结构和 BERT 几乎完全一样** —— 同样是 Transformer Encoder 堆叠、同样拿 `[CLS]` 当句子表征、同样用绝对位置编码。差别集中在**训练配方**和**词表**上。所以这一条腿的价值，是提供一个"架构不动、只换训练方法"的对照：跑起来看程序打印的 config，就能一条条对上下面这些区别。
+
+| 区别 | BERT-base | RoBERTa-large | 在 config / 代码里的体现 |
+| ---- | ---- | ---- | ---- |
+| 预训练任务 | MLM + NSP | 只保留 MLM，**去掉 NSP** | `type_vocab_size` 由 2 变成 1，`token_type_embeddings` 只剩一行 |
+| 分词器 | WordPiece | BPE | `vocab_size` 由 30522 变成 50265 |
+| `pad_token_id` | 0 | 1 | BERT 的 0 是 `[PAD]`；**RoBERTa 的 0 是 `<s>`，1 才是 `<pad>`** |
+| 掩码方式 | 静态：预处理时盖一次 | 动态：每个 epoch 重新采样要盖的位置 | 代码里体现为掩码交给模型内部做 |
+| 训练数据与步数 | 16GB 语料 | 160GB 语料、更大 batch、训练更久 | 权重里看不出来，但这是效果差异的主因 |
+| 位置编码 | 绝对位置 | 绝对位置（和 BERT 相同） | `max_position_embeddings` = 514，没有相对位置 |
+| 规模（large） | 110M（base） | **355M** | 24 层、hidden 1024 |
+
+⚠️ 一个最容易静默出错的地方：**pad id 变了**。如果沿用 BERT 那套把 `pad_token_id` 写死成 0 的代码，RoBERTa 的句首符号 `<s>`（id = 0）会被当成 pad 屏蔽掉，而真正的 pad 又没被屏蔽 —— 注意力会算到补零的位置上，不报错，只是效果变差。因此本实现一律从 `model.config` / `tokenizer` 里取这些 id，不写死。
+
+#### 1. RoBERTa 编码层
+
+文本经 BPE 分词后转成 `input_ids` 和 `attention_mask`，送入预训练的 `roberta-large`。和 BERT 一样，每一层的自注意力都同时看见左右两侧的上下文，逐层生成**动态上下文词向量** —— 同一个词在不同句子里的向量不同，一词多义由此解决。取 `[CLS]`（在 RoBERTa 里就是句首的 `<s>`）位置的输出向量作为整句的语义摘要。
+
+#### 2. 分类输出层
+
+`AutoModelForSequenceClassification` 在 RoBERTa 主体之上自动挂分类头：`[CLS]` 向量 → Dropout → 线性层映射到 2 维 → 交叉熵损失。分类头是随机初始化的，会跟着训练一起更新（这里是**全量微调**，不存在冻不冻的问题）。
+
+#### 3. 训练流程
+
+本文件与 `imdb_bert_native.py`、`imdb_deberta_large.py` **代码完全一致，只改配置区的三行**：
+
+| 配置 | bert_native | **roberta_large** | 依据 |
+| ---- | ---- | ---- | ---- |
+| `MODEL_NAME` | `bert-base-uncased` | `roberta-large` | 换模型就是换这一行 |
+| `BATCH_SIZE` | 8 | **4** | 355M 比 110M 大三倍，batch 得调小 |
+| `LEARNING_RATE` | 5e-5 | **1e-5** | 模型越大学习率要越小 |
+
+训练循环是**手写的**：自定义 `Dataset` 封装编码结果，`DataLoader` 按批取数，`AdamW` 优化，3 个 epoch，每轮结束后在验证集上算准确率，最后遍历测试集出 csv。为了和另外两条腿横向比较，数据划分固定 `random_state=0`，三条腿用的是同一份验证集。
+
+混合精度部分有一笔实测：**开 AMP 之后 T4 上从 1.394 秒/步降到 0.512 秒/步，快 2.7 倍**。做法是 `autocast` 管前向（矩阵乘法走 fp16 张量核心，T4 上 fp16 峰值是 fp32 的 8 倍，而 softmax / LayerNorm / loss 这些对精度敏感的算子仍留在 fp32），`GradScaler` 管反向（先把 loss 放大再缩回，防止 fp16 梯度下溢成 0）。
+
+#### 4. 完整流程
+
+1. 读取数据，按 8:2 划分训练集与验证集（`random_state=0`，和另外两条腿一致）；
+2. 用 `roberta-large` 的 BPE 分词器编码、截断到 512；
+3. 自定义 `Dataset` 封装，`DataLoader` 组批（train 4 / eval 8）；
+4. 手动循环 3 个 epoch：前向 → 损失 → 反向 → 更新，全程 fp16 混合精度；
+5. 每个 epoch 结束在验证集上评估；
+6. 训练完成后预测测试集 25000 条，写出 `./result/roberta-large.csv`。
+
+#### 5. 优缺点
+
+**优点**
+- 架构与 BERT 同源，**换模型只改一行**，是把"训练配方的影响"单独隔离出来的理想对照；
+- 355M 的规模在单张 T4 上全量微调跑得动，不需要额外的参数高效方法；
+- 动态掩码 + 更大语料带来的效果提升，在 IMDB 这类长文本情感任务上体现得比较充分。
+
+**缺点**
+- 显存和耗时都是 BERT-base 的数倍（batch 只能开到 4）；
+- 词表从 30522 扩到 50265，嵌入层参数占比更大，小数据集上未必划算；
+- 位置编码仍是绝对位置，和 BERT 一样处理超长文本受限。
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | 预训练 RoBERTa-large（355M）+ 官方分类头 + 手动训练循环 |
+| 词向量表征层 | BPE 子词 + 动态掩码预训练得到的动态上下文词向量 |
+| 特征提取模块 | 24 层双向 Transformer Encoder，取句首 `<s>`（即 `[CLS]`）向量作句子表征 |
+| 分类输出模块 | `<s>` 向量经 Dropout 后送入线性分类层，交叉熵优化二分类 |
+| 与 BERT 的关键差别 | 去掉 NSP、词表 50265、动态掩码、`pad_token_id` 为 1 |
+| 整体流程 | 分词编码 → RoBERTa 提取动态表征 → 分类头输出 → 手动循环训练优化 |
+| 优势 | 架构同源、只改一行即可对照；规模适中，单卡可全量微调 |
+| 局限性 | 显存与耗时高于 BERT-base；batch 只能开到 4 |
+
+#### 结果
+
+| 实验版本 | 测试集准确率 |
+| ---- | ---- |
+| roberta-large.csv | 【待填】 |
+
+#### 结果分析
+
+- 三条腿（BERT / RoBERTa / DeBERTa）用的是同一份数据划分、同一个最大长度 512、同一套评测口径，所以结果可以直接横向比。
+- 混合精度这一项是这一条腿上量得最实的：**1.394 → 0.512 秒/步**，也顺带解释了后面 DeBERTa 那条腿为什么要在正式训练前去实测一次精度速度。
+- RoBERTa-large 的 batch 只能开到 4（BERT-base 是 8），这是"模型变大"在工程上最直接的体现。
+
+---
+
+## DeBERTa-v2-xxlarge + LoRA 模型原理
+
+这一条腿和另外两条走的路不一样，**而这个"不一样"本身就是结论**：BERT 和 RoBERTa 规模适中，全量微调就能跑；DeBERTa-v2 最小的 xlarge 也有 900M，xxlarge 更是 1.5B，在 Kaggle 的单张 T4 上**全量微调必然失败**，只能改用参数高效的方法（LoRA）。下面是这个过程完整走一遍的记录。
+
+### 一、先说 DeBERTa 和 BERT / RoBERTa 的结构差别
+
+DeBERTa = "Decoding-enhanced BERT with Disentangled Attention"，微软出品。跑起来看 config 就能对上这几条：
+
+| 区别 | BERT / RoBERTa | DeBERTa | config 里的体现 |
+| ---- | ---- | ---- | ---- |
+| 位置信息 | 绝对位置向量**加进**词向量再算注意力 | **解耦注意力**：每个词拆成"内容"和"相对位置"两套表示，注意力分数由 内容→内容、内容→位置、位置→内容、位置→位置 四项相加 | `relative_attention=True`、`position_biased_input=False` |
+| 位置编码 | 一张绝对位置查找表（0~511 号） | 相对位置：编码两个 token 之间的**距离** | `position_buckets`、`max_relative_positions` |
+| 掩码解码器 | 无 | **增强掩码解码器**：做 MLM 预测前把绝对位置信息加回去 | 权重里的 `lm_predictions.*`（微调阶段用不到） |
+| 句子类型嵌入 | BERT 有（2 行）、RoBERTa 1 行 | 没有 | `type_vocab_size=0` |
+
+规模上有两个尺寸：**xlarge 900M（24 层 / hidden 1536）、xxlarge 1.5B（48 层 / hidden 1536）**。本实验用的是 xxlarge。
+
+（顺带记一个踩过的坑：**`microsoft/deberta-v2-large` 这个模型不存在**。DeBERTa-v2 只发布了 xlarge 和 xxlarge 两个档，"large" 是 DeBERTa **v1** 的档位，写错会直接报 `RepositoryNotFoundError`。目录里那个 0 字节的 `imdb_deberta_v2_large.py` 就是当时留下的空壳。）
+
+### 二、第一次失败：全量微调 xxlarge 在 T4 上必然 OOM
+
+第一次的做法和另外两条腿完全一样 —— 同一套代码，只把 `MODEL_NAME` 换成 `microsoft/deberta-v2-xxlarge` 跑全量微调。结果是**在 T4 上必然崩**，而且原因不在代码：
+
+全量微调时，每个参数在显存里要占 **16 个字节**：
+
+```
+权重 fp32                     4 字节 / 参数
+梯度（backward 产生）          4 字节 / 参数
+AdamW 一阶动量 exp_avg         4 字节 / 参数
+AdamW 二阶动量 exp_avg_sq      4 字节 / 参数
+────────────────────────────────────────
+合计                          16 字节 / 参数
+```
+
+xxlarge 是 1566.9M 参数：
+
+```
+1566.9e6 × 16 B = 25.07e9 B = 23.35 GB
+而 T4 可用显存只有 14.56 GB  →  缺口 8.79 GB，必 OOM
+```
+
+**关键在于这 16 字节只跟参数量成正比，跟 batch_size 无关。** 所以"把 batch 调小一点"救不了（那只减掉激活值那一项），fp16 混合精度也救不了（参数、梯度、优化器状态三项仍然全是 fp32）。DeBERTa-v2 两个尺寸都装不下：
+
+| 模型 | 参数量 | 全量微调固定开销 | T4（14.56 GB） |
+| ---- | ---- | ---- | ---- |
+| deberta-v2-xlarge | 900M | 13.41 GB | 超 |
+| deberta-v2-xxlarge | 1566.9M | **23.35 GB** | 超 8.79 GB |
+
+第一次失败之后，这一条腿分成了三件事来做：
+
+1. **留证据**：`imdb_deberta_v2_xxlarge.py` —— 和能跑的版本一字不差，只改了配置区那三行，**故意留档的反面证据**；把模型名换回 xxlarge，它就崩。
+2. **留日志**：`imdb_deberta_v2_xxlarge_oom_demo.py` —— 显存墙取证脚本，`batch_size` 直接写 **1**（已经是能调到的最小值），跑出来必然报 OOM，同时打一张分阶段的显存快照。它专门用来堵住"你把 batch 调小点不就行了"这句话：batch=1 照样死，因为死因跟 batch 无关。
+3. **退一步**：`imdb_deberta_large.py` —— 改用 DeBERTa **v1** 的 `microsoft/deberta-large`（约 400M，固定开销 5.96 GB）先跑通。但它毕竟是上一代，和"进阶"这个主题对不上。
+
+> 取证脚本还顺手暴露了第二个坑：`microsoft/deberta-v2-xxlarge` 发布时权重存的是 **fp16**（下载日志里那个 3.14G 就是它，fp32 应该是 5.84G）。参数是 fp16 → 反向传出来的梯度也是 fp16 → `GradScaler` 抛 `ValueError: Attempting to unscale FP16 gradients`，而报错位置在 `scaler.step()` 内部，很容易误判成优化器或显存的问题。修法就一句：`from_pretrained(..., torch_dtype=torch.float32)`。
+
+### 三、听取老师建议：改用 LoRA（参数高效微调）
+
+老师给的方案是换成 LoRA，并提供了四份模板。四份文件骨架完全相同 —— tokenizer → 分词 → `DataCollatorWithPadding` → `AutoModelForSequenceClassification` → `get_peft_model` → `Trainer` → 预测 → 出 csv —— **差别只在配置区那一个 peft 配置类**（外加 adalora 那份多一行指定 GPU）：
+
+| 老师给的模板 | 挂什么 | 方法本身在 DeBERTa-v2 + 本环境上能不能用 |
+| ---- | ---- | ---- |
+| `imdb_deberta_lora.py` | `LoraConfig`（r=16, alpha=32） | ✅ **可用，本实验采用** |
+| `imdb_deberta_adalora.py` | `AdaLoraConfig` | ✅ 可用（另一种低秩方案，未采用） |
+| `imdb_deberta_prefix.py` | `PrefixTuningConfig` | ❌ DeBERTa-v2 上不可用 |
+| `imdb_deberta_ptuning.py` | `PromptEncoderConfig` | ❌ 在 peft 0.19.1 上 import 就报错 |
+
+（四份文件本身都还得先补上同一处 API 适配才能跑，见下面第 9 条；上表说的是"这个方法在这个模型上通不通"。）
+
+后两个为什么用不了，都查证过：
+
+- **Prefix Tuning 走的是 KV cache**：peft 的 `_prefix_tuning_forward` 会把虚拟 token 拼进 `past_key_values` 传给模型，拿不到就抛 `ValueError: Model does not support past key values which are required for prefix tuning.` 而 transformers 5.0 的 `modeling_deberta_v2.py` 里 `past_key_values` **一次都没出现** —— DeBERTa-v2 在这个版本里根本没有 KV cache。这不是配置问题，是方法本身对不上。
+- **P-Tuning 那份文件在第 12 行** `from peft import ... prepare_model_for_int8_training`**就挂了**：这个名字在 peft 0.19.1 里已经被删掉（只剩 `prepare_model_for_kbit_training`），import 阶段直接 `ImportError`，连模型都加载不到。
+
+**LoRA 为什么能救 1.5B**（这一笔账和前面那笔正好对上）：
+
+LoRA 冻结全部 15.7 亿预训练权重，只在旁边挂两个瘦矩阵 A、B（ΔW = B·A），只训练这两个小矩阵：
+
+```
+权重        1566.9M × 4 B  =  5.84 GB   ← 还在显存里，只是不参与更新
+梯度           7.1M × 4 B  =  0.03 GB   ← 只给 A、B 算
+优化器状态     7.1M × 8 B  =  0.06 GB   ← 只给 A、B 记账
+激活值                     ≈  2 GB      ← 靠梯度检查点压下来
+────────────────────────────────────────
+合计                       ≈  8 GB      ← T4（14.56 GB）装得下
+```
+
+**固定开销从 23.35 GB 压到 8 GB 上下**，靠的是三条措施，各管一块、缺一不可：
+
+| 措施 | 砍掉哪一块显存 |
+| ---- | ---- |
+| ① **LoRA** | 梯度 + 优化器状态（17.5 GB → 0.09 GB） |
+| ② **梯度检查点** | 激活值（11.4 GB → 约 2 GB） |
+| ③ 梯度累积 | 什么也不省 —— 它是为了"训练效果"，不是"省显存" |
+
+⚠️ 别把 ③ 和 ①② 混为一谈：梯度累积的唯一作用，是让"小 batch 攒出来的梯度"等价于"大 batch 一步算出来的梯度"，用来模拟更大的 batch。
+
+### 四、第二次失败：跑起来了，但验证准确率只有 0.5104
+
+挂上 LoRA 之后模型确实能在 T4 上跑起来了，但第一趟**跑满两轮，验证准确率卡在 0.5104** —— 二分类里 0.51 约等于抛硬币。也就是说"装得下"解决了，但"学得动"没有。
+
+这一趟之后做了一轮系统排查，量到了几个关键数字：
+
+- **冻住特征做线性探针**（把编码器冻住，只用它的输出训一个逻辑回归，量这套特征里到底有多少情感）：`[CLS]` 0.610 / **非 pad 位置平均池化 0.676**。同一套量法下，67M 的 distilbert 是 0.868。
+- **池化的跨样本差异只剩 1~5%** —— 这直接指向了下面第 1 条。
+
+### 五、一系列措施
+
+| # | 问题 | 措施 | 依据 / 效果 |
+| ---- | ---- | ---- | ---- |
+| 1 | `[CLS]` → **ContextPooler**（一个 1536×1536 的随机矩阵）→ 分类头。这个矩阵**不在预训练权重里**（加载报告写着 `pooler.dense.weight | MISSING`），等于在编码器和分类头之间夹了一层乱投影 | 绕开它，前向改成**非 pad 位置的平均池化**，直接把整句的平均喂给分类头 | 0.5104 的头号原因；线性探针也显示平均池化（0.676）优于 `[CLS]`（0.610） |
+| 2 | 分类头是随机初始化的，名字里又没有 `lora_`，**被 peft 冻住了** —— 顶上挂着一个永远不动的随机线性层 | `LoraConfig(..., modules_to_save=[分类头])` | 不写这一条，跑到天亮也是 0.5104 |
+| 3 | 不开梯度检查点，batch 4 × 512 token 的激活值就有十几个 G | `gradient_checkpointing_enable()`，并**必须配套** `enable_input_require_grads()` | 漏了后者，每层 checkpoint 的输入不带梯度 → **编码器一个梯度都拿不到，等于只有分类头在训**。不报错，只是永远 50% |
+| 4 | 老师和 LoRA 都用同一个学习率，但分类头的初始权重尺度只有 0.02，lr 太小根本挪不动 | **学习率分两组**：LoRA 2e-4、分类头 1e-3 | Adam 每步不管梯度多小都要走 lr 那么远；老师那份没写 lr，用的是默认 5e-5 |
+| 5 | tokenizer 里 `padding=True` 是"整份数据补到最长"，2 万条里有一条超长，其余统统补成 512 —— 而 IMDB 平均只有 265 token | **按长度排队组批**：`padding=False` + 长度接近的分到同一批 + 每批只补到自己这批的最长 | 一半算力在算 pad；组批之后一轮从约 3.5 小时降到约 1.6 小时，**一条信息都没丢**（超过 512 的照样截断，只是省掉 pad） |
+| 6 | 老师那份是 3 轮 × 1 万步 = **3 万步**，在 T4 上约 77 小时，而 Kaggle 单次会话上限 12 小时 | 步数**不写死**：先实测"秒/次更新"，再用时间预算倒推步数；配一道时间闸门，到点就停、照样往下走预测 | 步数和 batch 一改，它就和"跑满一轮"对不上了，所以必须算出来 |
+| 7 | 训练跑完才预测，万一被 12 小时会话上限掐掉，训练就白跑了 | **先存 LoRA 权重，再预测** | 新会话装回 adapter 就能直接出结果，不用重训 |
+| 8 | 精度写死 fp32，白白慢一倍多 | 开机实测：fp16 / fp32 各跑 10 次更新计时，**谁快用谁** | 2026-09-29 实测 fp32 26.7 秒/次 vs fp16 10.2 秒/次，**fp16 快 2.6 倍** |
+| 9 | 换了三处 API 名，跑不起来 | 适配 transformers 5.0 / peft 0.19.1：`Trainer(tokenizer=)` → `Trainer(processing_class=)`；`evaluation_strategy` → `eval_strategy`；`torch_dtype` → `dtype`；另外 Kaggle 自带的 torchao 0.10 低于 peft 0.19 要求的 0.16，必须在 import peft 之前卸掉 | 这几处都是版本升级删掉的，不是写错 |
+| 10 | "到底有没有在学"难以判断 | 加**两道闸门**（只打印、不拦路，照样往下跑、照样出 csv）：闸门 1 先自检模型和分词器是不是配套的，再冻住特征做线性探针，量这套特征里有多少情感；闸门 2 拿 128 条做**过拟合测试**（同一条训练路径跑 150 次更新，训练准确率必须 > 0.9） | 闸门 2 过不去就说明"连 128 条都记不住"，这时候改 lr / 步数没用，得先修路径 |
+
+### 六、优缺点
+
+**优点**
+- 把 1.5B 的模型塞进了单张 T4：固定开销从 23.35 GB 降到约 8 GB，这是全量微调做不到的；
+- LoRA 只训练约 7.1M 参数（占总量 0.45%），产物是一个几 MB 的 adapter，**想复现不用重训**；
+- 时间闸门 + 先存 adapter 的设计，让"跑到一半被掐"不会让整趟白跑。
+
+**缺点**
+- 只训低秩旁路，能改变的幅度有限；要吃满 LoRA 的效果需要足够的更新次数，而 Kaggle 的免费额度恰恰卡在这里；
+- 训练速度慢：单次更新以秒计，一轮就是小时级，必须靠时间预算倒推步数，而不是"跑够几轮"；
+- 依赖链敏感：transformers / peft / torchao 的版本一变就可能跑不起来（本实验踩到三处）。
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 模型架构 | 预训练 DeBERTa-v2-xxlarge（48 层 / hidden 1536 / 1.5B）+ 平均池化 + 线性分类头，**LoRA 微调** |
+| 为什么不用全量微调 | 全量微调每参数 16 字节，1.5B × 16 B = 23.35 GB > T4 的 14.56 GB；且与 batch 无关 |
+| 词向量表征层 | BPE 子词 + 解耦注意力（内容 / 相对位置分离），无句子类型嵌入（`type_vocab_size=0`） |
+| 特征提取模块 | 48 层解耦注意力 Encoder；取**非 pad 位置的平均池化**作为句子表征（不用模型自带那个随机初始化的 ContextPooler） |
+| 参数高效方法 | LoRA r=16 / alpha=32 / dropout=0.05，挂在 `query_proj`、`key_proj`、`value_proj`；分类头用 `modules_to_save` |
+| 显存措施 | LoRA（省梯度与优化器状态）+ 梯度检查点（省激活值）+ 梯度累积（换训练效果，不省显存） |
+| 时间措施 | 实测秒/次更新 → 按时间预算倒推步数；时间闸门到点就停；先存 adapter 再预测 |
+| 整体流程 | 两道闸门体检 → 实测精度速度 → 按预算训练（中途多次量验证准确率）→ 存 adapter → 预测测试集 → 出 csv |
+| 优势 | 让 1.5B 模型在单卡上可训；adapter 体积小、可复现；全过程可观测、可中断 |
+| 局限性 | 单次更新秒级、总步数受限；效果高度依赖更新次数；对库版本敏感 |
+
+#### 结果
+
+| 实验版本 | 验证准确率 | 测试集准确率 | 说明 |
+| ---- | ---- | ---- | ---- |
+| 全量微调 xxlarge | —— | —— | 未产出：T4 上必 OOM，留档见 `imdb_deberta_v2_xxlarge.py` |
+| LoRA（第一趟，跑满两轮） | 0.5104 | —— | 约等于抛硬币；查出 ContextPooler / 分类头被冻等原因后改进 |
+| LoRA（改进后，最终） | 【待填】 | 【待填】 | |
+
+#### 结果分析
+
+- **这一条腿最值得写的不是分数，是"方法跟着规模走"这件事**：同一个任务、同一套流程，BERT 和 RoBERTa 换一行模型名就能全量微调，DeBERTa-v2-xxlarge 换一行模型名就必崩 —— 于是必须换成 LoRA。老师给的四份参数高效模板里，只有 LoRA / AdaLoRA 能在 DeBERTa-v2 上跑（Prefix 需要 KV cache，而 DeBERTa-v2 没有；P-Tuning 那份依赖的函数在 peft 0.19.1 里已被删除）。
+- **"装得下"和"学得动"是两个问题**：LoRA 解决了前者（23.35 GB → 8 GB），但第一趟跑满两轮只有 0.5104。后面那一串措施（平均池化、分类头进 `modules_to_save`、`enable_input_require_grads`、学习率分组、按长度组批）才是冲着后者去的。
+- **冻住特征的线性探针给了这堆排查一个客观标尺**：同一套量法下 distilbert 0.868、DeBERTa-v2-xxlarge 的平均池化 0.676、`[CLS]` 0.610。三个不同规模的 DeBERTa 权重（v3-base / v2-xlarge / v2-xxlarge）在同一套探针下都明显低于一个 67M 的蒸馏模型 —— 而且探针准确率随层数加深单调下降（6 层 0.868 → 12 层 0.770 → 24 层 0.665 → 48 层 0.656）。这说明**"冻住特征 + 线性探针"这把尺子对深层模型本身就不公平**，不能用它给模型判死刑；反过来，它也解释了为什么"编码器几乎不动"时，结果会钉在 50% 附近。
+- **算力账最终决定了这一条腿的形态**：老师的 demo 是 3 轮 × 1 万步 = 3 万步，在 T4 上约 77 小时，而 Kaggle 免费额度是"单次会话 12 小时、每周 30 小时"。所以这里的做法不是"跑够几轮"，而是**先实测速度、再按时间预算倒推步数**，并且用按长度组批（一轮 3.5 h → 1.6 h）和 fp16（快 2.6 倍）把每一小时的产出尽量做大。
+
 
 
 
