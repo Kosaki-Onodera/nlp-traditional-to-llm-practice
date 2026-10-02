@@ -1019,7 +1019,7 @@ $$
 右半边是解码器，它比编码器多两处：
 
 - **Masked Multi-Head Attention（带掩码的自注意力）**：做生成任务时，预测第 $t$ 个词只能看前 $t-1$ 个词，不能偷看答案。掩码把"未来位置"的注意力分数置成 $-\infty$，softmax 之后这些位置的权重就变成 0。
-- **第二个 Multi-Head Attention 有三个箭头进来**：其中两个来自解码器自己（提供 $Q$），第三个箭头从**左边编码器的最顶端横着连过来**（提供 $K$ 和 $V$）。这就是**交叉注意力（Cross-Attention）**，它回答的是"我当前要生成的这个词，应该去看原文的哪些位置" —— 机器翻译里最关键的"对齐"就发生在这里。
+- **第二个 Multi-Head Attention 有三个箭头进来**：其中一个来自解码器自己（提供 $Q$），两个箭头从**左边编码器的最顶端横着连过来**（提供 $K$ 和 $V$）。这就是**交叉注意力（Cross-Attention）**，它回答的是"我当前要生成的这个词，应该去看原文的哪些位置" —— 机器翻译里最关键的"对齐"就发生在这里。
 
 ##### （8）图的顶部 —— Linear → Softmax → Output Probabilities
 
@@ -1226,9 +1226,9 @@ Word2Vec + RF 和 词袋模型 + RF作为基准模型，依靠这两个模型的
 
 | 排名 | 模型 | 类型 | 最好成绩 | 对应章节 |
 | :--: | ---- | ---- | :--: | ---- |
-| 🥇 1 | **DeBERTa-v2-xxlarge + LoRA** | 预训练语言模型（1.5B，参数高效微调） | **0.97044** | [DeBERTa-v2-xxlarge + LoRA 模型原理](#deberta-v2-xxlarge--lora-模型原理) |
-| 🥈 2 | **RoBERTa-large** | 预训练语言模型（355M，全量微调） | **0.94828** | [RoBERTa-large 模型原理](#roberta-large-模型原理) |
-| 🥉 3 | BERT + Trainer | 预训练语言模型（110M，全量微调） | 0.93884 | [bert_trainer 模型原理](#bert_trainer-模型原理) |
+| 1 | **DeBERTa-v2-xxlarge + LoRA** | 预训练语言模型（1.5B，参数高效微调） | **0.97044** | [DeBERTa-v2-xxlarge + LoRA 模型原理](#deberta-v2-xxlarge--lora-模型原理) |
+| 2 | **RoBERTa-large** | 预训练语言模型（355M，全量微调） | **0.94828** | [RoBERTa-large 模型原理](#roberta-large-模型原理) |
+| 3 | BERT + Trainer | 预训练语言模型（110M，全量微调） | 0.93884 | [bert_trainer 模型原理](#bert_trainer-模型原理) |
 | 4 | DistilBERT + Trainer | 预训练语言模型（67M，全量微调） | 0.92968 | [DistilBERT 模型与 Trainer 微调原理](#distilbert-模型与-trainer-微调原理) |
 | 5 | BERT（自定义分类头） | 预训练语言模型（110M，全量微调） | 0.91948 | [bert_scratch 模型原理](#bert_scratch-模型原理) |
 | 6 | BERT（手动训练循环） | 预训练语言模型（110M，全量微调） | 0.91692 | [bert_native 模型原理](#bert_native-模型原理) |
