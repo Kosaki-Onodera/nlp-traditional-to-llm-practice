@@ -7,6 +7,59 @@
 
 需要注意，最新监督记忆队列实验的准确率为 **0.96664**，低于普通 LoRA 的 0.97044，但在全部模型中位列第 2。完整训练 3 轮的耗时太长，因此该实验相较普通 LoRA 缩减了配置并减少了训练轮数。两者只差 **0.00380（0.38 个百分点）**；这是训练配置不同造成的结果，不能据此判断复杂模型本身比普通 LoRA 差。
 
+## 目录
+
+### 基础理论
+
+- [静态预训练词向量模型](#静态预训练词向量模型)
+  - [Word2Vec](#word2vec)
+  - [GloVe](#glove)
+- [动态词向量模型](#动态词向量模型)
+  - [BERT 预训练模型](#bert-预训练模型)
+  - [BERT 核心架构](#bert-核心架构)
+  - [训练产物与本质差异](#训练产物与本质差异)
+
+### 神经网络结构
+
+- [输入数据的格式](#输入数据的格式)
+- [CNN 文本卷积神经网络](#一cnn-文本卷积神经网络)
+- [LSTM 长短期记忆网络](#二lstm-长短期记忆网络)
+- [GRU 门控循环单元](#三gru-门控循环单元)
+- [CNN-LSTM 混合特征提取模型](#四cnn-lstm-混合特征提取模型)
+- [Attention-LSTM 注意力增强时序模型](#五attention-lstm-注意力增强时序模型)
+- [Capsule-LSTM 胶囊时序融合网络](#六capsule_lstm-胶囊时序融合网络)
+- [Transformer 自注意力序列建模网络](#七transformer-自注意力序列建模网络)
+
+### 模型实验
+
+- [全部模型成绩汇总](#全部模型成绩汇总)
+- [Word2Vec + RF](#word2vecrf)
+- [词袋模型 + 随机森林（RF）](#词袋模型随机森林rf原理)
+- [GloVe + TextCNN](#glove--textcnn-模型原理)
+- [GloVe + LSTM](#glove--lstm-模型原理)
+- [GloVe + Attention-LSTM](#glove--attention-lstm-模型原理)
+- [GloVe + CNN-LSTM](#glove--cnn-lstm-模型原理)
+- [GloVe + GRU](#glove--gru-模型原理)
+- [GloVe + Capsule-LSTM](#glove--capsule_lstm-模型原理)
+- [Transformer 模型](#transformer-模型原理)
+- [bert_native](#bert_native-模型原理)
+- [bert_scratch](#bert_scratch-模型原理)
+- [bert_trainer](#bert_trainer-模型原理)
+- [DistilBERT + Trainer](#distilbert-模型与-trainer-微调原理)
+- [RoBERTa-large](#roberta-large-模型原理)
+- [DeBERTa-v2-xxlarge + LoRA](#deberta-v2-xxlarge--lora-模型原理)
+- [DeBERTa-v2-xxlarge + Unsloth + R-Drop + SCL + 监督记忆队列](#deberta-v2-xxlarge--unsloth--r-drop--scl-监督记忆队列)
+- [三个模型的综合对比](#三个模型的综合对比)
+- [总结](#总结)
+
+### 进阶方法文档
+
+- [R-Drop](原理详解/01-RDrop.md)
+- [SCL](原理详解/02-SCL.md)
+- [Unsloth](原理详解/03-Unsloth.md)
+- [监督记忆队列](原理详解/04-MoCo监督记忆队列.md)
+- [小 batch 与 SCL 问题复盘](原理详解/05-小batch与SCL问题复盘.md)
+
 ## 静态预训练词向量模型
 静态预训练词向量的核心作用，就是把文本里的每一个单词，转换成计算机能看懂的一组小数向量。  例如 apple:[0.56,0.48,0.24...]  cat:[0.19,0.42,0.96...]     
 相比传统词袋模型只统计单词出现次数、不区分语义的问题，Word2Vec和GloVe可以让语义相似的单词，在向量空间里距离更近，更好地表达词语含义。之所以叫静态，是因为每个单词训练完成后只有唯一固定的向量，不会根据句子的上下文发生变化，无法区分一词多义。  
